@@ -1,3 +1,9 @@
+<h1><div align="center">
+ <img alt="pipecat-resampler" width="300px" height="auto" src="https://github.com/pipecat-ai/pipecat-resampler/raw/refs/heads/main/pipecat.png">
+</div></h1>
+
+[![PyPI](https://img.shields.io/pypi/v/pipecat-resampler)](https://pypi.org/project/pipecat-resampler)
+
 # pipecat-resampler
 
 A small C extension for Python that converts 16-bit PCM audio, mono or with interleaved channels, from one sample rate to another, chunk by chunk. It's made for real-time audio, such as voice pipelines built with [Pipecat](https://github.com/pipecat-ai/pipecat). Equal chunks in give equal chunks out: 40 ms of audio in always gives 40 ms out, the first chunk included.
