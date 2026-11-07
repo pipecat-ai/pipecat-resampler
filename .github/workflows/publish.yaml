@@ -10,7 +10,7 @@ on:
 
 jobs:
   check-version:
-    name: 'Check the tag matches the version'
+    name: 'Check the version and its changelog'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repo
@@ -27,6 +27,13 @@ jobs:
             echo "Tag $GITREF doesn't match version $version in pyproject.toml"
             exit 1
           fi
+
+      # The release notes come from this section, so a version without one
+      # stops here, before anything is published.
+      - name: Check CHANGELOG.md has a section for the version
+        env:
+          GITREF: ${{ github.event.inputs.gitref }}
+        run: python3 scripts/release-changelog.py "${GITREF#v}" > /dev/null
 
   build:
     name: 'Build and test wheels'
@@ -57,6 +64,9 @@ jobs:
           verbose: true
           print-hash: true
 
+  # Runs once the package is installable from PyPI. The notes are the
+  # version's CHANGELOG.md section, unwrapped for GitHub by
+  # scripts/release-changelog.py.
   github-release:
     name: 'Create GitHub Release'
     runs-on: ubuntu-latest
@@ -64,12 +74,23 @@ jobs:
     permissions:
       contents: write
     steps:
+      - name: Checkout repo
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.inputs.gitref }}
+
+      - name: Generate release notes
+        env:
+          GITREF: ${{ github.event.inputs.gitref }}
+        run: python3 scripts/release-changelog.py --no-heading "${GITREF#v}" > release-notes.md
+
       - name: Publish release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GH_REPO: ${{ github.repository }}
           GITREF: ${{ github.event.inputs.gitref }}
         run: |
-          if ! gh release view "$GITREF" >/dev/null 2>&1; then
-            gh release create "$GITREF" --title "$GITREF" --generate-notes --verify-tag
+          if gh release view "$GITREF" >/dev/null 2>&1; then
+            gh release edit "$GITREF" --notes-file release-notes.md
+          else
+            gh release create "$GITREF" --title "$GITREF" --notes-file release-notes.md --verify-tag
           fi
