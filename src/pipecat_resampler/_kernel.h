@@ -56,6 +56,9 @@ size_t resampler_delay(const resampler_t *r);
 /* Discards the audio held in the filter. */
 void resampler_reset(resampler_t *r);
 
+/* Whether audio has gone in since the resampler was created or last reset. */
+int resampler_pending(const resampler_t *r);
+
 /* Name of the dot-product kernel this resampler uses. */
 const char *resampler_kernel(const resampler_t *r);
 

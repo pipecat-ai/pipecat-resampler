@@ -105,7 +105,9 @@ static PyObject *Resampler_flush(PyObject *self, PyObject *Py_UNUSED(ignored)) {
     resampler_t *r = get(self);
     if (!r)
         return NULL;
-    size_t delay = resampler_delay(r);
+    /* With nothing gone in since the last reset, the filter holds only
+     * silence, so there's nothing to flush. */
+    size_t delay = resampler_pending(r) ? resampler_delay(r) : 0;
     size_t samples = delay * (size_t)resampler_channels(r);
     int16_t *zeros = calloc(samples ? samples : 1, sizeof(int16_t));
     if (!zeros)
@@ -156,7 +158,8 @@ static PyMethodDef Resampler_methods[] = {
      "give equal chunks out."},
     {"flush", Resampler_flush, METH_NOARGS,
      "flush()\n--\n\n"
-     "Return the audio the filter is delaying and reset for the next stream."},
+     "Return the audio the filter is delaying and reset for the next stream.\n\n"
+     "Empty when no audio has gone in since the resampler was created, flushed or reset."},
     {"reset", Resampler_reset, METH_NOARGS,
      "reset()\n--\n\n"
      "Discard the audio held in the filter."},

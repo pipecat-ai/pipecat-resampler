@@ -61,6 +61,7 @@ struct resampler {
      * padding. */
     float **bufs;
     size_t cap;
+    int pending; /* audio has gone in since the last reset */
     int64_t offset;
     int64_t step_whole;
     int step_frac;
@@ -439,7 +440,10 @@ void resampler_reset(resampler_t *r) {
             if (r->bufs[c])
                 memset(r->bufs[c], 0, sizeof(float) * (r->width - 1));
     r->offset = 0;
+    r->pending = 0;
 }
+
+int resampler_pending(const resampler_t *r) { return r->pending; }
 
 const char *resampler_kernel(const resampler_t *r) { return r->kernel; }
 
@@ -511,5 +515,6 @@ resampler_status_t resampler_process(resampler_t *r, const void *in, size_t in_f
         memmove(r->bufs[c], r->bufs[c] + in_frames, sizeof(float) * hist);
     }
     r->offset += (int64_t)count * r->down - (int64_t)in_frames * r->up;
+    r->pending = 1;
     return RESAMPLER_OK;
 }
