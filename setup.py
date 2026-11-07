@@ -21,7 +21,7 @@ setup(
     ext_modules=[
         Extension(
             "pipecat_resampler._resampler",
-            sources=["src/pipecat_resampler/_module.c", "src/pipecat_resampler/_kernel.c"],
+            sources=["src/pipecat_resampler/_resampler.c", "src/pipecat_resampler/_kernel.c"],
             define_macros=[("Py_LIMITED_API", "0x030B0000")],
             py_limited_api=True,
             extra_compile_args=compile_args,
