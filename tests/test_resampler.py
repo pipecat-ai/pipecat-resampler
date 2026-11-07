@@ -189,9 +189,65 @@ def test_clips_instead_of_wrapping():
 
 def test_properties():
     r = Resampler(24000, 16000)
-    assert (r.in_rate, r.out_rate) == (24000, 16000)
+    assert (r.in_rate, r.out_rate, r.channels) == (24000, 16000, 1)
     assert r.delay > 0
     assert r.kernel in {"avx2", "sse2", "neon", "generic"}
+    assert Resampler(24000, 16000, channels=2).channels == 2
+
+
+def interleave(*signals: np.ndarray) -> np.ndarray:
+    return np.stack(signals, axis=1).reshape(-1)
+
+
+@pytest.mark.parametrize("channels", [2, 3])
+@pytest.mark.parametrize("in_rate,out_rate", [(48000, 16000), (24000, 16000), (16000, 44100)])
+def test_each_channel_matches_resampling_it_alone(channels, in_rate, out_rate):
+    signals = [noise(in_rate, seed=c) for c in range(channels)]
+    frames = interleave(*signals).reshape(-1, channels)
+    rng = np.random.default_rng(1)
+    edges = np.cumsum(rng.integers(1, in_rate // 20, 400))
+    parts = np.split(frames, edges[edges < len(frames)])
+    r = Resampler(in_rate, out_rate, channels=channels)
+    out = np.concatenate(run(r, parts)).reshape(-1, channels)
+    for c, signal in enumerate(signals):
+        alone = Resampler(in_rate, out_rate).process(signal.tobytes())
+        assert np.array_equal(out[:, c], np.frombuffer(alone, dtype=np.int16))
+
+
+@pytest.mark.parametrize("ms", [10, 20, 40])
+def test_stereo_chunks_stay_steady(ms):
+    frames = interleave(noise(48000), noise(48000, seed=1))
+    size = 2 * 48000 * ms // 1000
+    r = Resampler(48000, 16000, channels=2)
+    out = run(r, chunks(frames, size))
+    assert {len(o) for o in out} == {2 * 16000 * ms // 1000}
+
+
+def test_flush_returns_every_channel():
+    left, right = noise(24000, 0.1), noise(24000, 0.1, seed=1)
+    r = Resampler(24000, 16000, channels=2)
+    r.process(interleave(left, right).tobytes())
+    tail = np.frombuffer(r.flush(), dtype=np.int16).reshape(-1, 2)
+    for c, signal in enumerate((left, right)):
+        mono = Resampler(24000, 16000)
+        mono.process(signal.tobytes())
+        assert np.array_equal(tail[:, c], np.frombuffer(mono.flush(), dtype=np.int16))
+
+
+def test_same_rate_passes_stereo_through():
+    data = interleave(noise(16000, 0.1), noise(16000, 0.1, seed=1)).tobytes()
+    assert Resampler(16000, 16000, channels=2).process(data) == data
+
+
+def test_partial_frames_are_refused():
+    with pytest.raises(ValueError, match="whole frames"):
+        Resampler(48000, 16000, channels=2).process(b"\x00" * 6)
+
+
+@pytest.mark.parametrize("channels", [0, -2])
+def test_bad_channel_counts_are_refused(channels):
+    with pytest.raises(ValueError, match="channels must be positive"):
+        Resampler(16000, 8000, channels=channels)
 
 
 KERNEL_CHECK = """
@@ -202,6 +258,8 @@ signal = (rng.standard_normal(48000) * 8000).astype(np.int16).tobytes()
 for i, o in [(24000, 16000), (24000, 8000), (8000, 24000), (44100, 16000)]:
     r = Resampler(i, o)
     sys.stdout.buffer.write(r.process(signal[: 2 * i]))
+r = Resampler(24000, 16000, channels=2)
+sys.stdout.buffer.write(r.process(signal[: 4 * 24000]))
 print(r.kernel, file=sys.stderr)
 """
 

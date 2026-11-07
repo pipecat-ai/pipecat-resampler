@@ -1,6 +1,6 @@
 # pipecat-resampler
 
-A small C extension for Python that converts mono 16-bit PCM audio from one sample rate to another, chunk by chunk, for real-time voice pipelines like [Pipecat](https://github.com/pipecat-ai/pipecat). Equal chunks in give equal chunks out: 40 ms of audio in always gives 40 ms out, the first chunk included.
+A small C extension for Python that converts 16-bit PCM audio, mono or with interleaved channels, from one sample rate to another, chunk by chunk. It's built for real-time audio, such as voice pipelines like [Pipecat](https://github.com/pipecat-ai/pipecat). Equal chunks in give equal chunks out: 40 ms of audio in always gives 40 ms out, the first chunk included.
 
 ```python
 from pipecat_resampler import Resampler
@@ -8,6 +8,9 @@ from pipecat_resampler import Resampler
 resampler = Resampler(24000, 16000)
 chunk_16k = resampler.process(chunk_24k)  # bytes in, bytes out
 tail = resampler.flush()  # the audio the filter is delaying
+
+stereo = Resampler(48000, 16000, channels=2)
+frames_16k = stereo.process(frames_48k)  # interleaved frames in and out
 ```
 
 ## Platforms
@@ -94,6 +97,8 @@ Run `uv run python scripts/bench.py` to measure on your machine. It times soxr, 
 It's a polyphase Kaiser-windowed sinc filter, the design WebRTC and Speex use. The filter keeps the lower rate's band flat up to 90% of its Nyquist frequency and attenuates aliasing and images by about 90 dB.
 
 Each call works out how many output samples its input is worth and carries any fraction of a sample into the next call. That's what keeps the output steady, for any pair of rates and any chunk size. Instead of holding output back, the filter delays the audio by a few milliseconds; `flush()` returns that delayed end, and `reset()` discards it.
+
+With several channels, the audio is interleaved frames, and each channel is filtered on its own with the same filter. The cost grows with the channel count, so stereo costs twice what mono does.
 
 The inner loop picks the fastest kernel the CPU supports when a resampler is created: AVX2 with FMA or SSE2 on x86-64, NEON on ARM64, and plain C elsewhere. Filter phases with symmetric taps add mirrored samples before multiplying, which halves the multiplications. Set `PIPECAT_RESAMPLER_KERNEL` to `generic`, `sse2`, `avx2` or `neon` to force a kernel.
 

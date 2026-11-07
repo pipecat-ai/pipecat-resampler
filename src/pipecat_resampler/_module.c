@@ -29,12 +29,13 @@ static resampler_t *get(PyObject *self) {
 }
 
 static int Resampler_init(PyObject *self, PyObject *args, PyObject *kwds) {
-    static char *keywords[] = {"in_rate", "out_rate", NULL};
-    int in_rate, out_rate;
-    if (!PyArg_ParseTupleAndKeywords(args, kwds, "ii:Resampler", keywords, &in_rate, &out_rate))
+    static char *keywords[] = {"in_rate", "out_rate", "channels", NULL};
+    int in_rate, out_rate, channels = 1;
+    if (!PyArg_ParseTupleAndKeywords(args, kwds, "ii|i:Resampler", keywords, &in_rate, &out_rate,
+                                     &channels))
         return -1;
     resampler_status_t status;
-    resampler_t *r = resampler_new(in_rate, out_rate, &status);
+    resampler_t *r = resampler_new(in_rate, out_rate, channels, &status);
     if (!r) {
         if (status == RESAMPLER_NO_MEMORY)
             PyErr_NoMemory();
@@ -42,6 +43,8 @@ static int Resampler_init(PyObject *self, PyObject *args, PyObject *kwds) {
             PyErr_Format(PyExc_ValueError,
                          "cannot resample from %d Hz to %d Hz: the filter would be too large",
                          in_rate, out_rate);
+        else if (status == RESAMPLER_BAD_CHANNELS)
+            PyErr_Format(PyExc_ValueError, "channels must be positive, got %d", channels);
         else
             PyErr_Format(PyExc_ValueError, "sample rates must be positive, got %d and %d",
                          in_rate, out_rate);
@@ -63,13 +66,14 @@ static void Resampler_dealloc(PyObject *self) {
     Py_DECREF(type);
 }
 
-/* Runs in_len samples through the resampler into a new bytes object. */
-static PyObject *run(resampler_t *r, const void *in, size_t in_len) {
-    size_t count = resampler_output_count(r, in_len);
-    PyObject *out = PyBytes_FromStringAndSize(NULL, (Py_ssize_t)(count * sizeof(int16_t)));
+/* Runs in_frames frames through the resampler into a new bytes object. */
+static PyObject *run(resampler_t *r, const void *in, size_t in_frames) {
+    size_t count = resampler_output_count(r, in_frames);
+    size_t size = count * (size_t)resampler_channels(r) * sizeof(int16_t);
+    PyObject *out = PyBytes_FromStringAndSize(NULL, (Py_ssize_t)size);
     if (!out)
         return NULL;
-    if (resampler_process(r, in, in_len, (int16_t *)PyBytes_AsString(out)) != RESAMPLER_OK) {
+    if (resampler_process(r, in, in_frames, (int16_t *)PyBytes_AsString(out)) != RESAMPLER_OK) {
         Py_DECREF(out);
         return PyErr_NoMemory();
     }
@@ -84,11 +88,15 @@ static PyObject *Resampler_process(PyObject *self, PyObject *audio) {
     if (PyObject_GetBuffer(audio, &view, PyBUF_SIMPLE) < 0)
         return NULL;
     PyObject *out = NULL;
-    if (view.len % 2)
+    int channels = resampler_channels(r);
+    Py_ssize_t frame = (Py_ssize_t)(channels * sizeof(int16_t));
+    if (view.len % frame)
         PyErr_Format(PyExc_ValueError,
-                     "audio must be 16-bit samples, got an odd number of bytes (%zd)", view.len);
+                     "audio must be whole frames of 16-bit samples for %d channel(s), got %zd "
+                     "bytes",
+                     channels, view.len);
     else
-        out = run(r, view.buf, (size_t)view.len / 2);
+        out = run(r, view.buf, (size_t)(view.len / frame));
     PyBuffer_Release(&view);
     return out;
 }
@@ -98,7 +106,8 @@ static PyObject *Resampler_flush(PyObject *self, PyObject *Py_UNUSED(ignored)) {
     if (!r)
         return NULL;
     size_t delay = resampler_delay(r);
-    int16_t *zeros = calloc(delay ? delay : 1, sizeof(int16_t));
+    size_t samples = delay * (size_t)resampler_channels(r);
+    int16_t *zeros = calloc(samples ? samples : 1, sizeof(int16_t));
     if (!zeros)
         return PyErr_NoMemory();
     PyObject *out = run(r, zeros, delay);
@@ -123,6 +132,11 @@ static PyObject *Resampler_get_out_rate(PyObject *self, void *Py_UNUSED(closure)
     return PyLong_FromLong(((ResamplerObject *)self)->out_rate);
 }
 
+static PyObject *Resampler_get_channels(PyObject *self, void *Py_UNUSED(closure)) {
+    resampler_t *r = get(self);
+    return r ? PyLong_FromLong(resampler_channels(r)) : NULL;
+}
+
 static PyObject *Resampler_get_delay(PyObject *self, void *Py_UNUSED(closure)) {
     resampler_t *r = get(self);
     return r ? PyLong_FromSize_t(resampler_delay(r)) : NULL;
@@ -136,9 +150,10 @@ static PyObject *Resampler_get_kernel(PyObject *self, void *Py_UNUSED(closure)) 
 static PyMethodDef Resampler_methods[] = {
     {"process", Resampler_process, METH_O,
      "process(audio)\n--\n\n"
-     "Resample a chunk of mono 16-bit PCM and return the resampled bytes.\n\n"
-     "The result holds exactly the audio the input amounts to at the output rate, so\n"
-     "equal chunks in give equal chunks out."},
+     "Resample a chunk of 16-bit PCM and return the resampled bytes.\n\n"
+     "With more than one channel, the audio is interleaved frames. The result holds\n"
+     "exactly the audio the input amounts to at the output rate, so equal chunks in\n"
+     "give equal chunks out."},
     {"flush", Resampler_flush, METH_NOARGS,
      "flush()\n--\n\n"
      "Return the audio the filter is delaying and reset for the next stream."},
@@ -151,8 +166,9 @@ static PyMethodDef Resampler_methods[] = {
 static PyGetSetDef Resampler_getset[] = {
     {"in_rate", Resampler_get_in_rate, NULL, "Input sample rate in Hz.", NULL},
     {"out_rate", Resampler_get_out_rate, NULL, "Output sample rate in Hz.", NULL},
+    {"channels", Resampler_get_channels, NULL, "Number of interleaved channels.", NULL},
     {"delay", Resampler_get_delay, NULL,
-     "Input samples it takes for the last input to reach the output.", NULL},
+     "Input frames it takes for the last input to reach the output.", NULL},
     {"kernel", Resampler_get_kernel, NULL,
      "Name of the dot-product kernel in use: avx2, sse2, neon or generic.", NULL},
     {NULL, NULL, NULL, NULL, NULL},
@@ -160,11 +176,12 @@ static PyGetSetDef Resampler_getset[] = {
 
 static PyType_Slot Resampler_slots[] = {
     {Py_tp_doc,
-     "Resampler(in_rate, out_rate)\n--\n\n"
-     "Streaming resampler for mono 16-bit PCM whose output keeps pace with its input.\n\n"
+     "Resampler(in_rate, out_rate, channels=1)\n--\n\n"
+     "Streaming resampler for 16-bit PCM whose output keeps pace with its input.\n\n"
      "A polyphase Kaiser-windowed sinc filter keeps the lower rate's band flat up to 90%\n"
      "of its Nyquist frequency and attenuates aliasing and images by about 90 dB. It\n"
-     "delays the audio by a few milliseconds instead of holding output back."},
+     "delays the audio by a few milliseconds instead of holding output back. With more\n"
+     "than one channel, audio is interleaved frames and each channel is filtered on its own."},
     {Py_tp_new, PyType_GenericNew},
     {Py_tp_init, Resampler_init},
     {Py_tp_dealloc, Resampler_dealloc},
