@@ -48,3 +48,12 @@ test-command = "pytest {project}/tests"
 
 [tool.cibuildwheel.macos]
 archs = ["x86_64", "arm64"]
+
+# Tag the glibc wheels for the oldest glibc they run on, 2.17, and nothing newer.
+[[tool.cibuildwheel.overrides]]
+select = "*-manylinux_x86_64"
+repair-wheel-command = "auditwheel repair --plat manylinux_2_17_x86_64 --only-plat -w {dest_dir} {wheel}"
+
+[[tool.cibuildwheel.overrides]]
+select = "*-manylinux_aarch64"
+repair-wheel-command = "auditwheel repair --plat manylinux_2_17_aarch64 --only-plat -w {dest_dir} {wheel}"
