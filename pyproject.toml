@@ -20,6 +20,10 @@ classifiers = [
 ]
 dependencies = []
 
+[project.urls]
+Source = "https://github.com/pipecat-ai/pipecat-resampler"
+Issues = "https://github.com/pipecat-ai/pipecat-resampler/issues"
+
 [dependency-groups]
 dev = ["pytest>=8", "numpy>=1.26", "soxr>=1.0"]
 
