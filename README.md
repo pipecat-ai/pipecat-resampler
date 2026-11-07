@@ -2,7 +2,7 @@
  <img alt="pipecat-resampler" width="300px" height="auto" src="https://github.com/pipecat-ai/pipecat-resampler/raw/refs/heads/main/pipecat.png">
 </div></h1>
 
-[![PyPI](https://img.shields.io/pypi/v/pipecat-resampler)](https://pypi.org/project/pipecat-resampler)
+[![PyPI](https://img.shields.io/pypi/v/pipecat-resampler)](https://pypi.org/project/pipecat-resampler) ![Tests](https://github.com/pipecat-ai/pipecat-resampler/actions/workflows/wheels.yaml/badge.svg) [![Docs](https://img.shields.io/badge/Documentation-blue)](https://docs.pipecat.ai) [![Discord](https://img.shields.io/discord/1239284677165056021)](https://discord.gg/pipecat)
 
 # pipecat-resampler
 
