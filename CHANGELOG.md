@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `flush()` returns nothing when no audio has gone in since the resampler was
+  created, flushed or reset. It returned a few milliseconds of silence, which
+  a caller that flushes at the end of every stream could send as audio.
+
 ## [0.1.0] - 2026-11-07
 
 ### Added

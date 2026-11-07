@@ -7,7 +7,10 @@ class Resampler:
     def process(self, audio: Buffer) -> bytes:
         """Resample a chunk of 16-bit PCM, interleaved frames when there are several channels."""
     def flush(self) -> bytes:
-        """Return the audio the filter is delaying and reset for the next stream."""
+        """Return the audio the filter is delaying and reset for the next stream.
+
+        Empty when no audio has gone in since the resampler was created, flushed or reset.
+        """
     def reset(self) -> None:
         """Discard the audio held in the filter."""
     @property

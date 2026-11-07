@@ -150,6 +150,21 @@ def test_flush_and_reset_start_a_new_stream():
     assert r.process(signal.tobytes()) == fresh
 
 
+@pytest.mark.parametrize("channels", [1, 2])
+def test_flush_is_empty_when_no_audio_went_in(channels):
+    chunk = noise(24000, 0.04 * channels).tobytes()
+    r = Resampler(24000, 8000, channels=channels)
+    assert r.flush() == b""
+    r.process(b"")
+    assert r.flush() == b""
+    r.process(chunk)
+    assert r.flush() != b""
+    assert r.flush() == b""
+    r.process(chunk)
+    r.reset()
+    assert r.flush() == b""
+
+
 def test_same_rate_passes_audio_through():
     r = Resampler(16000, 16000)
     data = noise(16000, 0.1).tobytes()
