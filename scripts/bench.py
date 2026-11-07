@@ -8,8 +8,8 @@
 
 Prints microseconds per chunk, median of five runs: first at 24 -> 16 kHz by chunk
 size, then by rate pair at 40 ms chunks, the size Pipecat's output transport sends.
-soxr is a dev dependency; samplerate, PyAV, the Speex library and Pipecat's numpy
-resampler are measured when they're installed.
+soxr is a dev dependency; samplerate, PyAV and the Speex library are measured when
+they're installed.
 """
 
 import ctypes
@@ -107,22 +107,6 @@ def speex_q7(i, o):
     return run
 
 
-def pipecat_numpy(i, o):
-    from pipecat.audio.resamplers.sinc_stream_resampler import SincStreamAudioResampler
-
-    r = SincStreamAudioResampler()
-
-    def run(x):
-        # resample() never awaits, so it runs to completion on the first send.
-        coro = r.resample(x.tobytes(), i, o)
-        try:
-            coro.send(None)
-        except StopIteration as stop:
-            return stop.value
-
-    return run
-
-
 def available():
     candidates = {
         "pipecat-resampler": pipecat_resampler,
@@ -131,7 +115,6 @@ def available():
         "samplerate sinc_medium": samplerate_medium,
         "PyAV": pyav,
         "Speex quality 7": speex_q7,
-        "Pipecat numpy": pipecat_numpy,
     }
     found = {}
     for name, make in candidates.items():

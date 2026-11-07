@@ -49,7 +49,6 @@ Each resampler converted 24 kHz noise to 16 kHz in 40 ms chunks, called from Pyt
 | samplerate (libsamplerate) `sinc_medium` | 640, first chunk 594 | -100 dB | 198 µs | 1.8 MB |
 | PyAV (FFmpeg) | 640, first chunk 624 | -88 dB | 33.7 µs | 127 MB |
 | Speex resampler, quality 7 | 640 | -100 dB | 26.9 µs | no PyPI binding |
-| Pipecat's numpy version | 640 | -98 dB | 37.6 µs | numpy only |
 | **pipecat-resampler** | 640 | -98 dB | 9.1 µs | 0.1 MB |
 
 How each one fits this use:
@@ -58,7 +57,6 @@ How each one fits this use:
 - **samplerate** (libsamplerate) is steady after its first chunk and very clean. Its sinc converters compute the filter for each output sample, which handles any ratio and costs about 15 times soxr's CPU here.
 - **PyAV** wraps FFmpeg's resampler, which is steady after its first chunk and fast. It brings FFmpeg along, 127 MB installed, and each call from Python costs about 30 µs whatever the chunk size.
 - **Speex** has a steady, clean resampler. It has no Python binding on PyPI (the `speexdsp` package covers its echo canceller), so we measured the system library through ctypes. It uses about twice soxr's CPU here, and more at 44.1 kHz, where it computes the filter on the fly.
-- **Pipecat's numpy version** (`SincStreamAudioResampler`) runs the same filter as this package, with output matching within one 16-bit step, and needs nothing beyond numpy. Python overhead puts it at about three times soxr's CPU.
 
 ## Performance
 
@@ -74,7 +72,6 @@ At 24 → 16 kHz, by chunk size:
 | samplerate `sinc_medium` | 55.0 | 103.0 | 198.1 |
 | PyAV | 29.0 | 31.3 | 33.7 |
 | Speex quality 7 | 9.2 | 14.9 | 26.9 |
-| Pipecat's numpy version | 23.0 | 27.8 | 37.6 |
 
 At 40 ms chunks, the size Pipecat's output transport sends, by rate pair:
 
@@ -86,11 +83,10 @@ At 40 ms chunks, the size Pipecat's output transport sends, by rate pair:
 | samplerate `sinc_medium` | 198.8 | 184.0 | 127.8 | 145.1 | 357.0 | 388.8 |
 | PyAV | 33.5 | 32.8 | 31.8 | 31.2 | 36.0 | 35.6 |
 | Speex quality 7 | 27.4 | 29.7 | 19.6 | 19.0 | 55.5 | 217.3 |
-| Pipecat's numpy version | 37.8 | 32.7 | 27.0 | 34.4 | 66.1 | 227.6 |
 
 At 24 → 16 kHz, pipecat-resampler is the fastest of the filtered options at every chunk size, and its lead grows as chunks get smaller, because each call costs less. With 40 ms chunks, soxr VHQ is a little faster on 8 → 16 and 48 → 16 kHz, where its multistage FFT design is very cheap. Even pipecat-resampler's slowest case here, 17 µs per 40 ms chunk, is under 0.05% of one core per stream.
 
-Run `uv run python scripts/bench.py` to measure on your machine. It times soxr, and also samplerate, PyAV, the Speex library and Pipecat's numpy version when they're installed.
+Run `uv run python scripts/bench.py` to measure on your machine. It times soxr, and also samplerate, PyAV and the Speex library when they're installed.
 
 ## How it works
 
