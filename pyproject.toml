@@ -1,0 +1,46 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pipecat-resampler"
+version = "0.1.0"
+description = "Streaming audio resampler whose output keeps pace with its input"
+license = "BSD-2-Clause"
+license-files = ["LICENSE"]
+readme = "README.md"
+requires-python = ">=3.11"
+keywords = ["audio", "resampling", "real-time", "voice"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Programming Language :: C",
+    "Programming Language :: Python :: 3",
+    "Topic :: Multimedia :: Sound/Audio :: Conversion",
+]
+dependencies = []
+
+[dependency-groups]
+dev = ["pytest>=8", "numpy>=1.26", "soxr>=1.0"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+pipecat_resampler = ["py.typed", "*.pyi"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+
+[tool.cibuildwheel]
+# The extension uses the stable ABI, so a cp311 wheel serves every later Python.
+build = "cp311-*"
+skip = "*-win32 *-manylinux_i686 *-musllinux_i686"
+test-requires = ["pytest", "numpy"]
+test-command = "pytest {project}/tests"
+
+[tool.cibuildwheel.macos]
+archs = ["x86_64", "arm64"]
