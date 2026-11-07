@@ -25,7 +25,7 @@ The extension uses Python's stable ABI, so one wheel per platform covers Python 
 
 ## Why it exists
 
-Real-time voice pipelines resample all the time. WebRTC audio arrives at 48 kHz, speech recognition and voice activity models often want 16 kHz, phone calls run at 8 kHz, and many TTS voices only come at the rate they were trained at, such as 22.05 or 24 kHz. The conversion happens chunk by chunk, every 10 to 40 ms, for every stream a process is handling.
+A real-time voice pipeline has to resample whenever its parts run at different rates. WebRTC audio arrives at 48 kHz while a speech recognizer might want 16 kHz, or a TTS voice that only comes at 24 kHz has to go out on an 8 kHz phone call. When that happens, the conversion runs chunk by chunk, every 10 to 40 ms, for every stream the process is handling.
 
 We wanted a resampler built for that:
 
@@ -107,3 +107,7 @@ uv run python scripts/bench.py
 ```
 
 Wheels are built and tested with [cibuildwheel](https://cibuildwheel.pypa.io) on every pull request and every push to `main`.
+
+## License
+
+pipecat-resampler is released under the [BSD 2-Clause License](LICENSE).
