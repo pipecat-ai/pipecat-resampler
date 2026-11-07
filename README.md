@@ -108,6 +108,8 @@ uv run python scripts/bench.py
 
 Wheels are built and tested with [cibuildwheel](https://cibuildwheel.pypa.io) on every pull request and every push to `main`.
 
+Add a line under `## [Unreleased]` in [CHANGELOG.md](CHANGELOG.md) for every change users will notice. A release renames that section to the new version and date, and its GitHub release notes are taken from it.
+
 ## License
 
 pipecat-resampler is released under the [BSD 2-Clause License](LICENSE).
