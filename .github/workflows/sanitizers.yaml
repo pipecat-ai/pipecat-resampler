@@ -1,0 +1,42 @@
+name: sanitizers
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  sanitizers:
+    name: ASan and UBSan, ${{ matrix.kernel }} kernel
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest, kernel: generic }
+          - { os: ubuntu-latest, kernel: sse2 }
+          - { os: ubuntu-latest, kernel: avx2 }
+          - { os: ubuntu-24.04-arm, kernel: neon }
+    env:
+      CC: gcc
+      CFLAGS: -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer -g
+      LDFLAGS: -fsanitize=address,undefined
+      ASAN_OPTIONS: detect_leaks=0:halt_on_error=1:abort_on_error=1
+      UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+      PIPECAT_RESAMPLER_KERNEL: ${{ matrix.kernel }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+
+      - name: Build with the sanitizers
+        run: uv sync --no-editable
+
+      - name: Run the tests
+        run: |
+          # Python isn't built with ASan, so its runtime has to be loaded first.
+          export LD_PRELOAD="$(gcc -print-file-name=libasan.so)"
+          .venv/bin/python -c "import os; from pipecat_resampler import Resampler; kernel = Resampler(24000, 16000).kernel; assert kernel == os.environ['PIPECAT_RESAMPLER_KERNEL'], kernel"
+          # Without output capture, so a report isn't lost when the sanitizer aborts.
+          .venv/bin/python -m pytest -s
