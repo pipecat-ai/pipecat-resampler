@@ -169,7 +169,7 @@ soxr HQ is faster at every pair, and soxr VHQ at all but 24 → 16 and 44.1 → 
 
 **Cost.** Every filter tap costs about the same, around 0.08 ns here, and the filter does about 115 multiply-adds for every sample at the higher of the two rates. So 48 → 16 kHz costs twice what 24 → 16 kHz does, and 44.1 kHz about the same as 48 kHz.
 
-**Kernels.** The inner loop uses the fastest kernel the CPU supports: AVX2 with FMA or SSE2 on x86-64, NEON on ARM64, and plain C elsewhere. Filter phases with symmetric taps add mirrored samples before multiplying, which halves the multiplications. Set `PIPECAT_RESAMPLER_KERNEL` to `generic`, `sse2`, `avx2` or `neon` to force a kernel.
+**Kernels.** The inner loop uses the fastest kernel the CPU supports: AVX2 with FMA or SSE2 on x86-64, NEON on ARM64, and plain C elsewhere. With SSE2, NEON and plain C, filter phases with symmetric taps add mirrored samples before multiplying, which halves the multiplications; with AVX2, the plain dot product is faster. Set `PIPECAT_RESAMPLER_KERNEL` to `generic`, `sse2`, `avx2` or `neon` to force a kernel.
 
 ## Development
 

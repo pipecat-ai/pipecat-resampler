@@ -61,7 +61,7 @@ struct filter {
     phase_t *phases;
     float *arena;
     dot_fn dot;
-    fold_fn fold;
+    fold_fn fold; /* NULL where the plain dot product is faster */
     const char *kernel;
 };
 
@@ -161,23 +161,6 @@ RS_AVX2_TARGET static float dot_avx2(const float *a, const float *t, int n) {
     return hsum_avx(_mm256_add_ps(_mm256_add_ps(a0, a1), _mm256_add_ps(a2, a3)));
 }
 
-RS_AVX2_TARGET static float fold_avx2(const float *w, int span, const float *t, int hp) {
-    const __m256i rev = _mm256_setr_epi32(7, 6, 5, 4, 3, 2, 1, 0);
-    __m256 a0 = _mm256_setzero_ps(), a1 = _mm256_setzero_ps();
-    int j = 0;
-    for (; j + 16 <= hp; j += 16) {
-        __m256 r0 = _mm256_permutevar8x32_ps(_mm256_loadu_ps(w + span - 8 - j), rev);
-        __m256 r1 = _mm256_permutevar8x32_ps(_mm256_loadu_ps(w + span - 16 - j), rev);
-        a0 = _mm256_fmadd_ps(_mm256_add_ps(_mm256_loadu_ps(w + j), r0), _mm256_load_ps(t + j), a0);
-        a1 = _mm256_fmadd_ps(_mm256_add_ps(_mm256_loadu_ps(w + j + 8), r1), _mm256_load_ps(t + j + 8), a1);
-    }
-    for (; j < hp; j += 8) {
-        __m256 r0 = _mm256_permutevar8x32_ps(_mm256_loadu_ps(w + span - 8 - j), rev);
-        a0 = _mm256_fmadd_ps(_mm256_add_ps(_mm256_loadu_ps(w + j), r0), _mm256_load_ps(t + j), a0);
-    }
-    return hsum_avx(_mm256_add_ps(a0, a1));
-}
-
 static int has_avx2(void) {
     __builtin_cpu_init();
     return __builtin_cpu_supports("avx2") && __builtin_cpu_supports("fma");
@@ -236,7 +219,7 @@ static void choose_kernel(filter_t *f) {
 #if RS_AVX2
     if (has_avx2()) {
         f->dot = dot_avx2;
-        f->fold = fold_avx2;
+        f->fold = NULL;
         f->kernel = "avx2";
     }
 #endif
@@ -317,12 +300,12 @@ static double *design_taps(const filter_t *f, long length, long taps) {
     return h;
 }
 
-static void set_up_phase(phase_t *ph, const float *taps, int width, float *store) {
+static void set_up_phase(phase_t *ph, const float *taps, int width, int can_fold, float *store) {
     float peak = 0.0f;
     for (int j = 0; j < width; j++)
         if (fabsf(taps[j]) > peak)
             peak = fabsf(taps[j]);
-    int symmetric = width >= 16;
+    int symmetric = can_fold && width >= 16;
     for (int j = 0; j < width / 2 && symmetric; j++)
         if (fabsf(taps[j] - taps[width - 1 - j]) > 1e-6f * peak)
             symmetric = 0;
@@ -403,7 +386,7 @@ filter_t *filter_new(int in_rate, int out_rate, resampler_status_t *status) {
     for (int p = 0; p < f->up; p++) {
         for (int j = 0; j < f->width; j++)
             row[j] = (float)h[(size_t)(f->width - 1 - j) * f->up + p];
-        set_up_phase(&f->phases[p], row, f->width, f->arena + stride * p);
+        set_up_phase(&f->phases[p], row, f->width, f->fold != NULL, f->arena + stride * p);
     }
     free(h);
     free(row);
