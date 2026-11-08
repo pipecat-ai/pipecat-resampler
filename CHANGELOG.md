@@ -28,6 +28,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   takes a quarter to two fifths less CPU with AVX2, and a tenth to a fifth
   less with SSE2.
 
+- With NEON, on ARM64, rates like 48 → 16, 24 → 16, 24 → 8 and 8 → 16 kHz
+  take a third to nearly half less CPU.
+
 ## [0.1.1] - 2026-11-07
 
 ### Fixed

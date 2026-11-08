@@ -169,7 +169,7 @@ pipecat-resampler is faster than soxr VHQ at 24 → 16, 24 → 8, 48 → 16 and 
 
 **Cost.** The filter does about 115 multiply-adds for every sample at the higher of the two rates, so 48 kHz input needs twice the work of 24 kHz input. Rates like 48 → 16, 24 → 16 and 8 → 16 kHz have a filter with at most four phases, and four outputs that share a phase are computed in one pass, which loads each tap once for all four. The 44.1 kHz family has 160 phases or more, too many for that, so it computes one output at a time.
 
-**Kernels.** The inner loop uses the fastest kernel the CPU supports: AVX2 with FMA or SSE2 on x86-64, NEON on ARM64, and plain C elsewhere. AVX2 and SSE2 compute four outputs per pass where the filter allows it. NEON and plain C compute one at a time, and add mirrored samples before multiplying where a phase's taps are symmetric, which halves the multiplications. Set `PIPECAT_RESAMPLER_KERNEL` to `generic`, `sse2`, `avx2` or `neon` to force a kernel.
+**Kernels.** The inner loop uses the fastest kernel the CPU supports: AVX2 with FMA or SSE2 on x86-64, NEON on ARM64, and plain C elsewhere. AVX2, SSE2 and NEON compute four outputs per pass where the filter allows it. Plain C, and SSE2 and NEON where they compute one output at a time, add mirrored samples before multiplying where a phase's taps are symmetric, which halves the multiplications. Set `PIPECAT_RESAMPLER_KERNEL` to `generic`, `sse2`, `avx2` or `neon` to force a kernel.
 
 ## Development
 

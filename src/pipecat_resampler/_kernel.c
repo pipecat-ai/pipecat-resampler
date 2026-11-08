@@ -269,6 +269,56 @@ static float fold_neon(const float *w, int span, const float *t, int hp) {
     }
     return vaddvq_f32(vaddq_f32(a0, a1));
 }
+
+/* Loads each tap once for all four windows. Each window keeps four sums and
+ * adds them up the way dot_neon does, so its result is exactly dot_neon's. */
+static void dot4_neon(const float *a, ptrdiff_t stride, const float *t, int n, float *out) {
+    const float *a0 = a, *a1 = a + stride, *a2 = a + 2 * stride, *a3 = a + 3 * stride;
+    float32x4_t s0 = vdupq_n_f32(0.0f), s1 = vdupq_n_f32(0.0f);
+    float32x4_t s2 = vdupq_n_f32(0.0f), s3 = vdupq_n_f32(0.0f);
+    float32x4_t u0 = vdupq_n_f32(0.0f), u1 = vdupq_n_f32(0.0f);
+    float32x4_t u2 = vdupq_n_f32(0.0f), u3 = vdupq_n_f32(0.0f);
+    float32x4_t v0 = vdupq_n_f32(0.0f), v1 = vdupq_n_f32(0.0f);
+    float32x4_t v2 = vdupq_n_f32(0.0f), v3 = vdupq_n_f32(0.0f);
+    float32x4_t w0 = vdupq_n_f32(0.0f), w1 = vdupq_n_f32(0.0f);
+    float32x4_t w2 = vdupq_n_f32(0.0f), w3 = vdupq_n_f32(0.0f);
+    int j = 0;
+    for (; j + 16 <= n; j += 16) {
+        float32x4_t t0 = vld1q_f32(t + j), t1 = vld1q_f32(t + j + 4);
+        float32x4_t t2 = vld1q_f32(t + j + 8), t3 = vld1q_f32(t + j + 12);
+        s0 = vfmaq_f32(s0, vld1q_f32(a0 + j), t0);
+        s1 = vfmaq_f32(s1, vld1q_f32(a1 + j), t0);
+        s2 = vfmaq_f32(s2, vld1q_f32(a2 + j), t0);
+        s3 = vfmaq_f32(s3, vld1q_f32(a3 + j), t0);
+        u0 = vfmaq_f32(u0, vld1q_f32(a0 + j + 4), t1);
+        u1 = vfmaq_f32(u1, vld1q_f32(a1 + j + 4), t1);
+        u2 = vfmaq_f32(u2, vld1q_f32(a2 + j + 4), t1);
+        u3 = vfmaq_f32(u3, vld1q_f32(a3 + j + 4), t1);
+        v0 = vfmaq_f32(v0, vld1q_f32(a0 + j + 8), t2);
+        v1 = vfmaq_f32(v1, vld1q_f32(a1 + j + 8), t2);
+        v2 = vfmaq_f32(v2, vld1q_f32(a2 + j + 8), t2);
+        v3 = vfmaq_f32(v3, vld1q_f32(a3 + j + 8), t2);
+        w0 = vfmaq_f32(w0, vld1q_f32(a0 + j + 12), t3);
+        w1 = vfmaq_f32(w1, vld1q_f32(a1 + j + 12), t3);
+        w2 = vfmaq_f32(w2, vld1q_f32(a2 + j + 12), t3);
+        w3 = vfmaq_f32(w3, vld1q_f32(a3 + j + 12), t3);
+    }
+    for (; j < n; j += 8) {
+        float32x4_t t0 = vld1q_f32(t + j), t1 = vld1q_f32(t + j + 4);
+        s0 = vfmaq_f32(s0, vld1q_f32(a0 + j), t0);
+        s1 = vfmaq_f32(s1, vld1q_f32(a1 + j), t0);
+        s2 = vfmaq_f32(s2, vld1q_f32(a2 + j), t0);
+        s3 = vfmaq_f32(s3, vld1q_f32(a3 + j), t0);
+        u0 = vfmaq_f32(u0, vld1q_f32(a0 + j + 4), t1);
+        u1 = vfmaq_f32(u1, vld1q_f32(a1 + j + 4), t1);
+        u2 = vfmaq_f32(u2, vld1q_f32(a2 + j + 4), t1);
+        u3 = vfmaq_f32(u3, vld1q_f32(a3 + j + 4), t1);
+    }
+    out[0] = vaddvq_f32(vaddq_f32(vaddq_f32(s0, u0), vaddq_f32(v0, w0)));
+    out[1] = vaddvq_f32(vaddq_f32(vaddq_f32(s1, u1), vaddq_f32(v1, w1)));
+    out[2] = vaddvq_f32(vaddq_f32(vaddq_f32(s2, u2), vaddq_f32(v2, w2)));
+    out[3] = vaddvq_f32(vaddq_f32(vaddq_f32(s3, u3), vaddq_f32(v3, w3)));
+}
 #endif
 
 static void choose_kernel(filter_t *f) {
@@ -298,6 +348,7 @@ static void choose_kernel(filter_t *f) {
 #if RS_NEON
     f->dot = dot_neon;
     f->fold = fold_neon;
+    f->dot4 = dot4_neon;
     f->kernel = "neon";
 #endif
 }
