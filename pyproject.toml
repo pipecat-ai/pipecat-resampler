@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "pipecat-resampler"
 version = "0.1.1"
-description = "Streaming audio resampler whose output keeps pace with its input"
+description = "Sinc audio resampler for real-time voice, streaming or one clip at a time"
 license = "BSD-2-Clause"
 license-files = ["LICENSE"]
 readme = "README.md"

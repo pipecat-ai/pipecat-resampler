@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `Resampler`, a one-shot resampler for whole clips with the same filter.
+  Its output lines up with its input and keeps the clip's length, rounded to
+  the nearest sample, and it releases the GIL while it works.
+
+### Changed
+
+- The streaming resampler is now `StreamResampler`. `Resampler` is the new
+  one-shot resampler.
+
+- Filters have an odd number of taps, which can shift streaming output by
+  less than a sample. Output sizes and the delay stay the same.
+
+- Resamplers between the same two rates share one filter, so each is built
+  and held once per process.
+
 ## [0.1.1] - 2026-11-07
 
 ### Fixed

@@ -4,8 +4,8 @@
 # SPDX-License-Identifier: BSD 2-Clause License
 #
 
-"""Streaming audio resampler whose output keeps pace with its input."""
+"""Polyphase sinc resamplers for 16-bit PCM: one-shot for whole clips, streaming for real time."""
 
-from pipecat_resampler._resampler import Resampler
+from pipecat_resampler._resampler import Resampler, StreamResampler
 
-__all__ = ["Resampler"]
+__all__ = ["Resampler", "StreamResampler"]
