@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `Resampler`, a one-shot resampler for whole clips with the same filter.
+  Its output lines up with its input and keeps the clip's length, rounded to
+  the nearest sample, and it releases the GIL while it works.
+
+### Changed
+
+- The streaming resampler is now `StreamResampler`, with the same output.
+  `Resampler` is the new one-shot resampler.
+
 ## [0.1.1] - 2026-11-07
 
 ### Fixed

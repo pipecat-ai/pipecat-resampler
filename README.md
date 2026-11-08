@@ -6,17 +6,20 @@
 
 # pipecat-resampler
 
-A small C extension for Python that converts 16-bit PCM audio, mono or with interleaved channels, from one sample rate to another, chunk by chunk. It's made for real-time audio, such as voice pipelines built with [Pipecat](https://github.com/pipecat-ai/pipecat). Equal chunks in give equal chunks out: 40 ms of audio in always gives 40 ms out, the first chunk included.
+A small C extension for Python that converts 16-bit PCM audio, mono or with interleaved channels, from one sample rate to another, chunk by chunk or a whole clip at once. It's made for real-time audio, such as voice pipelines built with [Pipecat](https://github.com/pipecat-ai/pipecat). Streaming, equal chunks in give equal chunks out: 40 ms of audio in always gives 40 ms out, the first chunk included. For a whole clip, the output lines up with the input.
 
 ```python
-from pipecat_resampler import Resampler
+from pipecat_resampler import Resampler, StreamResampler
 
-resampler = Resampler(24000, 16000)
-chunk_16k = resampler.process(chunk_24k)  # bytes in, bytes out
-tail = resampler.flush()  # the audio the filter is delaying
+stream = StreamResampler(24000, 16000)
+chunk_16k = stream.process(chunk_24k)  # bytes in, bytes out
+tail = stream.flush()  # the audio the filter is delaying
 
-stereo = Resampler(48000, 16000, channels=2)
+stereo = StreamResampler(48000, 16000, channels=2)
 frames_16k = stereo.process(frames_48k)  # interleaved frames in and out
+
+resampler = Resampler(48000, 16000)
+clip_16k = resampler.resample(clip_48k)  # a whole clip in one call
 ```
 
 ## Platforms
@@ -44,6 +47,8 @@ We wanted a resampler built for that:
 
 Each library we tried covers part of this list, and none covered all of it.
 
+A pipeline also resamples whole clips now and then, such as a recorded tone to play or the audio a turn detector reads. `Resampler` does that with the same filter, so one library covers both.
+
 ## Comparison
 
 Each resampler converted 24 kHz noise to 16 kHz in 40 ms chunks, called from Python, on an Intel i9-10920X. Aliasing is how loud a 10 kHz tone comes out after it folds down to 6 kHz; lower is better.
@@ -63,6 +68,24 @@ How each one fits this use:
 - **samplerate** (libsamplerate) is steady after its first chunk and very clean. Its sinc converters compute the filter for each output sample, which handles any ratio and costs about 15 times soxr's CPU here.
 - **PyAV** wraps FFmpeg's resampler, which is steady after its first chunk and fast. It brings FFmpeg along, 127 MB installed, and each call from Python costs about 30 µs whatever the chunk size.
 - **Speex** has a steady, clean resampler. It has no Python binding on PyPI (the `speexdsp` package covers its echo canceller), so we measured the system library through ctypes. It uses about twice soxr's CPU here, and more at 44.1 kHz, where it computes the filter on the fly.
+
+### Whole clips
+
+For whole clips, `Resampler` compares with `soxr.resample()` at its two highest qualities. Each one converted a 2 s clip from 24 kHz to 16 kHz in one call. Error is how far a mix of 24 tones up to 6.8 kHz comes out from the exact signal at 16 kHz. Offset is how far the output sits from the input in time, in output samples. Gain at 7.6 kHz shows how much of the top of the band each one keeps.
+
+| Resampler | Error | Offset | Gain at 7.6 kHz | CPU per 2 s clip | Releases the GIL |
+|---|---|---|---|---|---|
+| soxr VHQ | -77 dB | 0.000 | -3.0 dB | 0.66 ms | yes |
+| soxr HQ | -78 dB | 0.000 | -2.9 dB | 0.42 ms | yes |
+| **pipecat-resampler** | -82 dB | 0.000 | -6.0 dB | 0.46 ms | yes |
+
+How they compare:
+
+- All three line the output up with the input, and turn a clip of n samples into `round(n * out_rate / in_rate)` samples, so a clip keeps its length.
+- soxr's filters are longer. They reject aliasing past -120 dB, and they keep the band flat further up: soxr is 3 dB down at 95% of the new Nyquist frequency, where pipecat-resampler is 6 dB down. pipecat-resampler's 90 dB puts what it lets through at about the last bit of 16-bit audio.
+- soxr adds dither when it outputs 16-bit samples, so its error here includes that noise, and digital silence comes back with noise in the last bit. pipecat-resampler rounds, so silence stays silent.
+- A `Resampler` designs its filter once and reuses it for every clip. `soxr.resample()` designs one on every call, which shows on short clips: a 0.2 s clip takes 0.05 ms here, against 0.08 ms for soxr HQ and 0.15 ms for VHQ.
+- Both release the GIL while they work, so other threads keep running while a clip is resampled.
 
 ## Performance
 
@@ -92,13 +115,37 @@ At 40 ms chunks, the size Pipecat's output transport sends, by rate pair:
 
 At 24 → 16 kHz, pipecat-resampler is the fastest of the filtered options at every chunk size, and its lead grows as chunks get smaller, because each call costs less. With 40 ms chunks, soxr VHQ is a little faster on 8 → 16 and 48 → 16 kHz, where its multistage FFT design is very cheap. Even pipecat-resampler's slowest case here, 17 µs per 40 ms chunk, is under 0.05% of one core per stream.
 
+Whole clips against `soxr.resample()`, in milliseconds per clip, from a later run on the same machine. At 24 → 16 kHz, by clip length:
+
+| Resampler | 0.2 s | 2 s | 8 s |
+|---|---|---|---|
+| **pipecat-resampler** | 0.05 | 0.47 | 1.85 |
+| soxr VHQ | 0.15 | 0.66 | 2.13 |
+| soxr HQ | 0.08 | 0.44 | 1.54 |
+
+For 2 s clips, by rate pair:
+
+| Resampler | 24 → 16 kHz | 24 → 8 kHz | 16 → 8 kHz | 8 → 16 kHz | 48 → 16 kHz | 44.1 → 16 kHz |
+|---|---|---|---|---|---|---|
+| **pipecat-resampler** | 0.46 | 0.43 | 0.29 | 0.37 | 0.85 | 0.84 |
+| soxr VHQ | 0.66 | 0.44 | 0.21 | 0.23 | 0.75 | 0.97 |
+| soxr HQ | 0.42 | 0.25 | 0.16 | 0.19 | 0.46 | 0.67 |
+
+pipecat-resampler is the quickest on short clips, and faster than soxr VHQ at 24 → 16 and 44.1 → 16 kHz. soxr HQ is faster on longer clips, and both soxr settings are faster at 2:1 and 3:1 ratios and when upsampling.
+
 Run `uv run python scripts/bench.py` to measure on your machine. It times soxr, and also samplerate, PyAV and the Speex library when they're installed.
+
+### What the cost depends on
+
+Every filter tap costs about the same, around 0.08 ns here, so the cost follows the number of taps. To keep 90% of the band flat, the filter has to span a fixed stretch of time, so it does about 115 multiply-adds for every sample at the higher of the two rates. That's why 48 → 16 kHz costs twice what 24 → 16 kHz does, and 44.1 kHz about the same as 48 kHz. soxr brings a large ratio down in stages: a short filter with a wide transition band lowers the rate first, and its sharp filter then runs at the lower rate, so its cost grows much less with the input rate.
 
 ## How it works
 
 It's a polyphase Kaiser-windowed sinc filter, the design WebRTC and Speex use. The filter keeps the lower rate's band flat up to 90% of its Nyquist frequency and attenuates aliasing and images by about 90 dB.
 
-Each call works out how many output samples its input is worth and carries any fraction of a sample into the next call. That's what keeps the output steady, for any pair of rates and any chunk size. Instead of holding output back, the filter delays the audio by a few milliseconds; `flush()` returns that delayed end, and `reset()` discards it.
+Each `StreamResampler` call works out how many output samples its input is worth and carries any fraction of a sample into the next call. That's what keeps the output steady, for any pair of rates and any chunk size. Instead of holding output back, the filter delays the audio by a few milliseconds; `flush()` returns that delayed end, and `reset()` discards it.
+
+A `Resampler` takes a whole clip, which it treats as silent before and after. Its filter has an odd number of taps, so each output sample sits exactly on the filter's middle tap: output sample n is the clip at input sample n × in_rate / out_rate. The output holds the clip's length at the new rate, rounded to the nearest sample. A call doesn't change the resampler, so threads can share one, and it releases the GIL while it works.
 
 With several channels, the audio is interleaved frames, and each channel is filtered on its own with the same filter. The cost grows with the channel count, so stereo costs twice what mono does.
 
