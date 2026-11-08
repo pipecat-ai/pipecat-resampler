@@ -54,7 +54,7 @@ def level_db(out: np.ndarray, rate: int, probe: float) -> float:
     return 20 * np.log10(max(spectrum[np.argmin(np.abs(freqs - probe))], 1e-9) / 16000)
 
 
-def design(in_rate: int, out_rate: int, once: bool = False):
+def design(in_rate: int, out_rate: int):
     """The filter the extension designs, split into one reversed filter per phase.
 
     Returns up, down, the phases and the middle tap on the input upsampled by up.
@@ -65,15 +65,9 @@ def design(in_rate: int, out_rate: int, once: bool = False):
     nyquist = min(in_rate, out_rate) / 2
     transition = nyquist * 0.1
     cutoff = nyquist - transition / 2
-    length = (90.0 - 7.95) / (2.285 * 2 * math.pi * transition / up_rate) + 1
-    length = math.ceil(math.ceil(length) / up) * up
-    taps = length
-    if once and length % 2 == 0:
-        if up % 2:
-            length += up
-            taps = length
-        else:
-            taps = length - 1
+    estimate = (90.0 - 7.95) / (2.285 * 2 * math.pi * transition / up_rate) + 1
+    taps = math.ceil(estimate) | 1
+    length = -(-taps // up) * up
     t = np.arange(taps) - (taps - 1) / 2
     h = np.sinc(2 * cutoff / up_rate * t) * np.kaiser(taps, 0.1102 * (90.0 - 8.7))
     h = np.concatenate([h * up / h.sum(), np.zeros(length - taps)])

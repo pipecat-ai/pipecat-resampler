@@ -15,8 +15,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- The streaming resampler is now `StreamResampler`, with the same output.
-  `Resampler` is the new one-shot resampler.
+- The streaming resampler is now `StreamResampler`. `Resampler` is the new
+  one-shot resampler.
+
+- Filters have an odd number of taps, which can shift streaming output by
+  less than a sample. Output sizes and the delay stay the same.
 
 ## [0.1.1] - 2026-11-07
 

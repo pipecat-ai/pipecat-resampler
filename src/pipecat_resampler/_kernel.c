@@ -63,7 +63,7 @@ struct resampler {
     size_t cap;
     int pending; /* audio has gone in since the last reset */
     int64_t offset;
-    /* One-shot: the filter's middle tap, on the input upsampled by up. */
+    /* The filter's middle tap, on the input upsampled by up. */
     int64_t center;
     int64_t step_whole;
     int step_frac;
@@ -284,9 +284,9 @@ static void aligned_free32(void *p) {
 #endif
 }
 
-/* A Kaiser-windowed sinc low-pass of taps taps, followed by zeros up to
- * length, to be split into one reversed filter per phase: phase p, tap j is
- * h[(width - 1 - j) * up + p]. */
+/* A Kaiser-windowed sinc low-pass with taps coefficients, padded with zeros
+ * to length, to be split into one reversed filter per phase: phase p, tap j
+ * is h[(width - 1 - j) * up + p]. */
 static double *design_taps(const resampler_t *r, long length, long taps) {
     double up_rate = (double)r->in_rate * r->up;
     double nyquist = (r->in_rate < r->out_rate ? r->in_rate : r->out_rate) / 2.0;
@@ -342,8 +342,7 @@ static void set_up_phase(phase_t *ph, const float *taps, int width, float *store
     }
 }
 
-static resampler_t *create(int in_rate, int out_rate, int channels, int once,
-                           resampler_status_t *status) {
+resampler_t *resampler_new(int in_rate, int out_rate, int channels, resampler_status_t *status) {
     *status = RESAMPLER_OK;
     if (in_rate <= 0 || out_rate <= 0) {
         *status = RESAMPLER_BAD_RATE;
@@ -376,26 +375,16 @@ static resampler_t *create(int in_rate, int out_rate, int channels, int once,
     double transition = nyquist * (1.0 - PASSBAND);
     double estimate = (ATTENUATION_DB - 7.95) / (2.285 * 2.0 * RS_PI * transition / up_rate) + 1.0;
     double whole = ceil(estimate);
-    if (whole + (once ? 2.0 : 1.0) * r->up > (double)MAX_TAPS) {
+    if (whole + r->up > (double)MAX_TAPS) {
         free(r);
         *status = RESAMPLER_TOO_LARGE;
         return NULL;
     }
-    long length = (long)ceil(whole / r->up) * r->up;
-    long taps = length;
-    /* A one-shot filter has an odd number of taps, so its middle, where each
-     * output sits, falls on a whole upsampled sample. With an odd up, one more
-     * tap per phase keeps the filter's phases symmetric; with an even up, the
-     * last tap is left at zero. */
-    if (once && length % 2 == 0) {
-        if (r->up % 2) {
-            length += r->up;
-            taps = length;
-        } else {
-            taps = length - 1;
-        }
-    }
-    r->width = (int)(length / r->up);
+    /* An odd number of taps puts the filter's middle, where each output sits,
+     * on a whole upsampled sample. Zeros pad it to whole phases. */
+    long taps = (long)whole | 1;
+    r->width = (int)((taps + r->up - 1) / r->up);
+    long length = (long)r->width * r->up;
     r->center = (taps - 1) / 2;
 
     double *h = design_taps(r, length, taps);
@@ -424,15 +413,6 @@ static resampler_t *create(int in_rate, int out_rate, int channels, int once,
     return r;
 }
 
-resampler_t *resampler_new(int in_rate, int out_rate, int channels, resampler_status_t *status) {
-    return create(in_rate, out_rate, channels, 0, status);
-}
-
-resampler_t *resampler_new_once(int in_rate, int out_rate, int channels,
-                                resampler_status_t *status) {
-    return create(in_rate, out_rate, channels, 1, status);
-}
-
 void resampler_free(resampler_t *r) {
     if (!r)
         return;
@@ -457,8 +437,7 @@ size_t resampler_output_count(const resampler_t *r, size_t in_frames) {
 size_t resampler_delay(const resampler_t *r) {
     if (r->passthrough)
         return 0;
-    int64_t taps = (int64_t)r->up * r->width - 1;
-    return (size_t)((taps + 2 * r->up - 1) / (2 * r->up));
+    return (size_t)((r->center + r->up - 1) / r->up);
 }
 
 void resampler_reset(resampler_t *r) {

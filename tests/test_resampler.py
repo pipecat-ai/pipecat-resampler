@@ -23,7 +23,7 @@ def resample(in_rate: int, out_rate: int, signal: np.ndarray, channels: int = 1)
 
 def reference(in_rate: int, out_rate: int, signal: np.ndarray) -> np.ndarray:
     """The same filter design and output positions, computed directly in numpy."""
-    up, down, phases, center = design(in_rate, out_rate, once=True)
+    up, down, phases, center = design(in_rate, out_rate)
     width = phases.shape[1]
     count = (2 * len(signal) * up + down) // (2 * down)
     positions = center + np.arange(count) * down

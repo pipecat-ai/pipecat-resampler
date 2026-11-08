@@ -21,22 +21,18 @@ typedef struct {
     int out_rate;
 } ResamplerObject;
 
-typedef resampler_t *(*make_fn)(int in_rate, int out_rate, int channels,
-                                resampler_status_t *status);
-
 static resampler_t *get(PyObject *self) { return ((ResamplerObject *)self)->r; }
 
 /* Builds a resampler object whole, so a call that has released the GIL never
  * sees its resampler replaced. */
-static PyObject *create(PyTypeObject *type, PyObject *args, PyObject *kwds, const char *format,
-                        make_fn make) {
+static PyObject *create(PyTypeObject *type, PyObject *args, PyObject *kwds, const char *format) {
     static char *keywords[] = {"in_rate", "out_rate", "channels", NULL};
     int in_rate, out_rate, channels = 1;
     if (!PyArg_ParseTupleAndKeywords(args, kwds, format, keywords, &in_rate, &out_rate,
                                      &channels))
         return NULL;
     resampler_status_t status;
-    resampler_t *r = make(in_rate, out_rate, channels, &status);
+    resampler_t *r = resampler_new(in_rate, out_rate, channels, &status);
     if (!r) {
         if (status == RESAMPLER_NO_MEMORY)
             PyErr_NoMemory();
@@ -111,7 +107,7 @@ static PyObject *get_kernel(PyObject *self, void *Py_UNUSED(closure)) {
 /* ---- StreamResampler ---- */
 
 static PyObject *StreamResampler_new(PyTypeObject *type, PyObject *args, PyObject *kwds) {
-    return create(type, args, kwds, "ii|i:StreamResampler", resampler_new);
+    return create(type, args, kwds, "ii|i:StreamResampler");
 }
 
 /* Runs in_frames frames through the resampler into a new bytes object. */
@@ -217,7 +213,7 @@ static PyType_Spec StreamResampler_spec = {
 /* ---- Resampler ---- */
 
 static PyObject *Resampler_new(PyTypeObject *type, PyObject *args, PyObject *kwds) {
-    return create(type, args, kwds, "ii|i:Resampler", resampler_new_once);
+    return create(type, args, kwds, "ii|i:Resampler");
 }
 
 static PyObject *Resampler_resample(PyObject *self, PyObject *audio) {

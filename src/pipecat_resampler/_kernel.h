@@ -8,14 +8,14 @@
  * Polyphase windowed-sinc resampler for 16-bit PCM, mono or interleaved
  * multichannel, streaming or one-shot.
  *
- * A streaming resampler returns, on every call, exactly the audio its input
- * amounts to at the output rate, carrying any fraction of a sample into the
- * next call, so equal input chunks come out as equal output chunks, the first
- * one included. The filter delays the audio by a few milliseconds instead of
- * holding output back.
+ * Streaming, every resampler_process() call returns exactly the audio its
+ * input amounts to at the output rate, carrying any fraction of a sample into
+ * the next call, so equal input chunks come out as equal output chunks, the
+ * first one included. The filter delays the audio by a few milliseconds
+ * instead of holding output back.
  *
- * A one-shot resampler converts a whole clip at a time. Its output lines up
- * with its input, and the clip is taken to be silent before and after.
+ * One-shot, resampler_once() converts a whole clip. Its output lines up with
+ * its input, and the clip is taken to be silent before and after.
  *
  * Lengths are in frames: one sample for every channel.
  */
@@ -36,14 +36,8 @@ typedef enum {
     RESAMPLER_NO_MEMORY,
 } resampler_status_t;
 
-/* Creates a streaming resampler between two rates, or returns NULL and sets
- * status. */
+/* Creates a resampler between two rates, or returns NULL and sets status. */
 resampler_t *resampler_new(int in_rate, int out_rate, int channels, resampler_status_t *status);
-
-/* Creates a one-shot resampler between two rates, or returns NULL and sets
- * status. */
-resampler_t *resampler_new_once(int in_rate, int out_rate, int channels,
-                                resampler_status_t *status);
 
 void resampler_free(resampler_t *r);
 
@@ -74,10 +68,10 @@ int resampler_pending(const resampler_t *r);
 size_t resampler_once_count(const resampler_t *r, size_t in_frames);
 
 /*
- * Resamples a whole clip of in_frames frames with a one-shot resampler into
- * out, which holds resampler_once_count(r, in_frames) frames. Output frame n
- * is the clip at input frame n * in_rate / out_rate. It doesn't change r, so
- * threads can share a one-shot resampler. Returns RESAMPLER_OK or
+ * Resamples a whole clip of in_frames frames into out, which holds
+ * resampler_once_count(r, in_frames) frames. Output frame n is the clip at
+ * input frame n * in_rate / out_rate. It doesn't change r, so threads can
+ * share a resampler they only use this way. Returns RESAMPLER_OK or
  * RESAMPLER_NO_MEMORY.
  */
 resampler_status_t resampler_once(const resampler_t *r, const void *in, size_t in_frames,
