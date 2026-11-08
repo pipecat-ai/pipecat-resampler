@@ -145,11 +145,13 @@ It's a polyphase Kaiser-windowed sinc filter, the design WebRTC and Speex use. T
 
 Each `StreamResampler` call works out how many output samples its input is worth and carries any fraction of a sample into the next call. That's what keeps the output steady, for any pair of rates and any chunk size. Instead of holding output back, the filter delays the audio by a few milliseconds; `flush()` returns that delayed end, and `reset()` discards it.
 
-A `Resampler` takes a whole clip, which it treats as silent before and after. Its filter has an odd number of taps, so each output sample sits exactly on the filter's middle tap: output sample n is the clip at input sample n × in_rate / out_rate. The output holds the clip's length at the new rate, rounded to the nearest sample. A call doesn't change the resampler, so threads can share one, and it releases the GIL while it works.
+A `Resampler` takes a whole clip, which it treats as silent before and after. The filter has an odd number of taps, so each output sample sits exactly on its middle tap: output sample n is the clip at input sample n × in_rate / out_rate. The output holds the clip's length at the new rate, rounded to the nearest sample. A call doesn't change the resampler, so threads can share one, and it releases the GIL while it works.
 
 With several channels, the audio is interleaved frames, and each channel is filtered on its own with the same filter. The cost grows with the channel count, so stereo costs twice what mono does.
 
-The inner loop picks the fastest kernel the CPU supports when a resampler is created: AVX2 with FMA or SSE2 on x86-64, NEON on ARM64, and plain C elsewhere. Filter phases with symmetric taps add mirrored samples before multiplying, which halves the multiplications. Set `PIPECAT_RESAMPLER_KERNEL` to `generic`, `sse2`, `avx2` or `neon` to force a kernel.
+Resamplers between the same two rates share one filter. It's built when the first of them is created and freed when the last one goes, so a process handling many streams holds each filter once. That matters most at 44.1 kHz, where a filter takes about 200 KB and a few milliseconds to build.
+
+The inner loop picks the fastest kernel the CPU supports when a filter is built: AVX2 with FMA or SSE2 on x86-64, NEON on ARM64, and plain C elsewhere. Filter phases with symmetric taps add mirrored samples before multiplying, which halves the multiplications. Set `PIPECAT_RESAMPLER_KERNEL` to `generic`, `sse2`, `avx2` or `neon` to force a kernel.
 
 ## Development
 

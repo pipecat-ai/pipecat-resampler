@@ -47,7 +47,61 @@ static void set_error(resampler_status_t status, const ResamplerObject *obj) {
                      obj->in_rate, obj->out_rate);
 }
 
-/* Allocates an object of type and builds its filter from (in_rate, out_rate,
+/* Filters shared by every resampler between the same two rates, each freed
+ * when the last resampler using it goes. Python creates and frees resamplers
+ * with the GIL held, so the list needs no lock. */
+typedef struct shared {
+    struct shared *next;
+    int in_rate;
+    int out_rate;
+    Py_ssize_t users;
+    filter_t *f;
+} shared_t;
+
+static shared_t *shared_filters;
+
+/* Returns the filter between two rates, made on first use, or NULL with
+ * status set. */
+static filter_t *take_filter(int in_rate, int out_rate, resampler_status_t *status) {
+    for (shared_t *s = shared_filters; s; s = s->next) {
+        if (s->in_rate == in_rate && s->out_rate == out_rate) {
+            s->users++;
+            return s->f;
+        }
+    }
+    shared_t *s = malloc(sizeof *s);
+    if (!s) {
+        *status = RESAMPLER_NO_MEMORY;
+        return NULL;
+    }
+    s->f = filter_new(in_rate, out_rate, status);
+    if (!s->f) {
+        free(s);
+        return NULL;
+    }
+    s->in_rate = in_rate;
+    s->out_rate = out_rate;
+    s->users = 1;
+    s->next = shared_filters;
+    shared_filters = s;
+    return s->f;
+}
+
+static void release_filter(filter_t *f) {
+    for (shared_t **link = &shared_filters; *link; link = &(*link)->next) {
+        shared_t *s = *link;
+        if (s->f != f)
+            continue;
+        if (--s->users == 0) {
+            *link = s->next;
+            filter_free(s->f);
+            free(s);
+        }
+        return;
+    }
+}
+
+/* Allocates an object of type and takes its filter for (in_rate, out_rate,
  * channels=1), or returns NULL with an exception set. */
 static ResamplerObject *create(PyTypeObject *type, PyObject *args, PyObject *kwds,
                                const char *format) {
@@ -65,7 +119,7 @@ static ResamplerObject *create(PyTypeObject *type, PyObject *args, PyObject *kwd
     obj->channels = channels;
     resampler_status_t status = channels > 0 ? RESAMPLER_OK : RESAMPLER_BAD_CHANNELS;
     if (status == RESAMPLER_OK)
-        obj->f = filter_new(in_rate, out_rate, &status);
+        obj->f = take_filter(in_rate, out_rate, &status);
     if (status != RESAMPLER_OK) {
         set_error(status, obj);
         Py_DECREF(obj);
@@ -76,7 +130,8 @@ static ResamplerObject *create(PyTypeObject *type, PyObject *args, PyObject *kwd
 
 static void free_object(PyObject *self) {
     PyTypeObject *type = Py_TYPE(self);
-    filter_free(as_resampler(self)->f);
+    if (as_resampler(self)->f)
+        release_filter(as_resampler(self)->f);
     freefunc tp_free = (freefunc)PyType_GetSlot(type, Py_tp_free);
     tp_free(self);
     Py_DECREF(type);
@@ -314,12 +369,26 @@ static PyType_Spec Resampler_spec = {
 
 /* ---- Module ---- */
 
+static PyObject *filter_count(PyObject *Py_UNUSED(module), PyObject *Py_UNUSED(ignored)) {
+    Py_ssize_t count = 0;
+    for (shared_t *s = shared_filters; s; s = s->next)
+        count++;
+    return PyLong_FromSsize_t(count);
+}
+
+static PyMethodDef module_methods[] = {
+    {"_filter_count", filter_count, METH_NOARGS,
+     "_filter_count()\n--\n\n"
+     "Number of filters the resamplers are sharing."},
+    {NULL, NULL, 0, NULL},
+};
+
 static struct PyModuleDef module_def = {
     PyModuleDef_HEAD_INIT,
     "_resampler",
     "Polyphase sinc resamplers for 16-bit PCM, one-shot and streaming.",
     -1,
-    NULL,
+    module_methods,
     NULL,
     NULL,
     NULL,

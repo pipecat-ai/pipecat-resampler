@@ -1,5 +1,8 @@
 from typing_extensions import Buffer
 
+def _filter_count() -> int:
+    """Number of filters the resamplers are sharing."""
+
 class Resampler:
     """One-shot resampler for whole clips of 16-bit PCM."""
 
