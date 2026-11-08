@@ -485,20 +485,30 @@ static void load_channel(float *b, const unsigned char *bytes, size_t frames, si
 
 /* Filters one channel's buffer into every stride-th sample of out, four
  * outputs per pass. Outputs n, n + up, n + 2 up and n + 3 up use the same
- * phase, with windows down samples apart. Lanes past count read the padding,
- * and their results are dropped. */
+ * phase, with windows down samples apart, so each block of 4 up outputs
+ * starts 4 down samples after the last, on the same phase. Lanes past count
+ * read the padding, and their results are dropped. */
 static void filter_channel4(const filter_t *f, const float *b, int64_t offset, size_t count,
                             size_t stride, int16_t *out) {
     size_t up = (size_t)f->up;
-    for (size_t first = 0; first < count; first += 4 * up) {
+    int64_t block_start = offset / f->up;
+    int block_phase = (int)(offset % f->up);
+    for (size_t first = 0; first < count; first += 4 * up, block_start += 4 * f->down) {
         size_t left = count - first;
+        int64_t start = block_start;
+        int phase = block_phase;
         for (size_t k = 0; k < up && k < left; k++) {
-            int64_t at = offset + (int64_t)(first + k) * f->down;
-            const phase_t *ph = &f->phases[at % f->up];
+            const phase_t *ph = &f->phases[phase];
             float v[4];
-            f->dot4(b + at / f->up, f->down, ph->taps, ph->len, v);
+            f->dot4(b + start, f->down, ph->taps, ph->len, v);
             for (size_t i = 0; i < 4 && k + i * up < left; i++)
                 out[(first + k + i * up) * stride] = to_int16(v[i]);
+            start += f->step_whole;
+            phase += f->step_frac;
+            if (phase >= f->up) {
+                phase -= f->up;
+                start++;
+            }
         }
     }
 }
