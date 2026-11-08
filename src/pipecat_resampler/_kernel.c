@@ -40,8 +40,16 @@
 
 #define RS_PI 3.14159265358979323846
 
+/* Filters with at most this many phases compute four outputs per pass, where
+ * the kernel can. Every output of a filter is computed the same way, so how
+ * the input is chunked doesn't change the result, and with more phases too
+ * few outputs in a chunk share each phase for four at a time to pay off. */
+#define BLOCK_MAX_UP 4
+
 typedef float (*dot_fn)(const float *a, const float *t, int n);
 typedef float (*fold_fn)(const float *w, int span, const float *t, int hp);
+/* Four dot products with the same taps, over windows stride samples apart. */
+typedef void (*dot4_fn)(const float *a, ptrdiff_t stride, const float *t, int n, float *out);
 
 typedef struct {
     int fold; /* symmetric taps, computed on mirrored pairs */
@@ -62,6 +70,8 @@ struct filter {
     float *arena;
     dot_fn dot;
     fold_fn fold; /* NULL where the plain dot product is faster */
+    dot4_fn dot4; /* NULL where outputs are computed one at a time */
+    int pad;      /* samples past the input that dot4 may read */
     const char *kernel;
 };
 
@@ -161,6 +171,40 @@ RS_AVX2_TARGET static float dot_avx2(const float *a, const float *t, int n) {
     return hsum_avx(_mm256_add_ps(_mm256_add_ps(a0, a1), _mm256_add_ps(a2, a3)));
 }
 
+/* Loads each tap once for all four windows. Each window keeps its own two
+ * sums, so its result doesn't depend on the other three. */
+RS_AVX2_TARGET static void dot4_avx2(const float *a, ptrdiff_t stride, const float *t, int n,
+                                     float *out) {
+    const float *a0 = a, *a1 = a + stride, *a2 = a + 2 * stride, *a3 = a + 3 * stride;
+    __m256 s0 = _mm256_setzero_ps(), s1 = _mm256_setzero_ps();
+    __m256 s2 = _mm256_setzero_ps(), s3 = _mm256_setzero_ps();
+    __m256 u0 = _mm256_setzero_ps(), u1 = _mm256_setzero_ps();
+    __m256 u2 = _mm256_setzero_ps(), u3 = _mm256_setzero_ps();
+    int j = 0;
+    for (; j + 16 <= n; j += 16) {
+        __m256 t0 = _mm256_load_ps(t + j), t1 = _mm256_load_ps(t + j + 8);
+        s0 = _mm256_fmadd_ps(_mm256_loadu_ps(a0 + j), t0, s0);
+        s1 = _mm256_fmadd_ps(_mm256_loadu_ps(a1 + j), t0, s1);
+        s2 = _mm256_fmadd_ps(_mm256_loadu_ps(a2 + j), t0, s2);
+        s3 = _mm256_fmadd_ps(_mm256_loadu_ps(a3 + j), t0, s3);
+        u0 = _mm256_fmadd_ps(_mm256_loadu_ps(a0 + j + 8), t1, u0);
+        u1 = _mm256_fmadd_ps(_mm256_loadu_ps(a1 + j + 8), t1, u1);
+        u2 = _mm256_fmadd_ps(_mm256_loadu_ps(a2 + j + 8), t1, u2);
+        u3 = _mm256_fmadd_ps(_mm256_loadu_ps(a3 + j + 8), t1, u3);
+    }
+    for (; j < n; j += 8) {
+        __m256 t0 = _mm256_load_ps(t + j);
+        s0 = _mm256_fmadd_ps(_mm256_loadu_ps(a0 + j), t0, s0);
+        s1 = _mm256_fmadd_ps(_mm256_loadu_ps(a1 + j), t0, s1);
+        s2 = _mm256_fmadd_ps(_mm256_loadu_ps(a2 + j), t0, s2);
+        s3 = _mm256_fmadd_ps(_mm256_loadu_ps(a3 + j), t0, s3);
+    }
+    out[0] = hsum_avx(_mm256_add_ps(s0, u0));
+    out[1] = hsum_avx(_mm256_add_ps(s1, u1));
+    out[2] = hsum_avx(_mm256_add_ps(s2, u2));
+    out[3] = hsum_avx(_mm256_add_ps(s3, u3));
+}
+
 static int has_avx2(void) {
     __builtin_cpu_init();
     return __builtin_cpu_supports("avx2") && __builtin_cpu_supports("fma");
@@ -206,6 +250,7 @@ static void choose_kernel(filter_t *f) {
     const char *wanted = getenv("PIPECAT_RESAMPLER_KERNEL");
     f->dot = dot_generic;
     f->fold = fold_generic;
+    f->dot4 = NULL;
     f->kernel = "generic";
     if (wanted && strcmp(wanted, "generic") == 0)
         return;
@@ -220,6 +265,7 @@ static void choose_kernel(filter_t *f) {
     if (has_avx2()) {
         f->dot = dot_avx2;
         f->fold = NULL;
+        f->dot4 = dot4_avx2;
         f->kernel = "avx2";
     }
 #endif
@@ -353,6 +399,9 @@ filter_t *filter_new(int in_rate, int out_rate, resampler_status_t *status) {
     int divisor = gcd(in_rate, out_rate);
     f->up = out_rate / divisor;
     f->down = in_rate / divisor;
+    if (f->up > BLOCK_MAX_UP)
+        f->dot4 = NULL;
+    f->pad = f->dot4 ? 3 * f->down : 0;
 
     double up_rate = (double)in_rate * f->up;
     double nyquist = (in_rate < out_rate ? in_rate : out_rate) / 2.0;
@@ -386,7 +435,7 @@ filter_t *filter_new(int in_rate, int out_rate, resampler_status_t *status) {
     for (int p = 0; p < f->up; p++) {
         for (int j = 0; j < f->width; j++)
             row[j] = (float)h[(size_t)(f->width - 1 - j) * f->up + p];
-        set_up_phase(&f->phases[p], row, f->width, f->fold != NULL, f->arena + stride * p);
+        set_up_phase(&f->phases[p], row, f->width, f->fold && !f->dot4, f->arena + stride * p);
     }
     free(h);
     free(row);
@@ -434,9 +483,33 @@ static void load_channel(float *b, const unsigned char *bytes, size_t frames, si
     }
 }
 
+/* Filters one channel's buffer into every stride-th sample of out, four
+ * outputs per pass. Outputs n, n + up, n + 2 up and n + 3 up use the same
+ * phase, with windows down samples apart. Lanes past count read the padding,
+ * and their results are dropped. */
+static void filter_channel4(const filter_t *f, const float *b, int64_t offset, size_t count,
+                            size_t stride, int16_t *out) {
+    size_t up = (size_t)f->up;
+    for (size_t first = 0; first < count; first += 4 * up) {
+        size_t left = count - first;
+        for (size_t k = 0; k < up && k < left; k++) {
+            int64_t at = offset + (int64_t)(first + k) * f->down;
+            const phase_t *ph = &f->phases[at % f->up];
+            float v[4];
+            f->dot4(b + at / f->up, f->down, ph->taps, ph->len, v);
+            for (size_t i = 0; i < 4 && k + i * up < left; i++)
+                out[(first + k + i * up) * stride] = to_int16(v[i]);
+        }
+    }
+}
+
 /* Filters one channel's buffer into every stride-th sample of out. */
 static void filter_channel(const filter_t *f, const float *b, int64_t offset, size_t count,
                            size_t stride, int16_t *out) {
+    if (f->dot4) {
+        filter_channel4(f, b, offset, count, stride, out);
+        return;
+    }
     /* Output n sits at n * down on the input upsampled by up. The offset is
      * where the first output sits relative to the first input there. */
     int64_t start = offset / f->up;
@@ -469,10 +542,10 @@ resampler_status_t filter_resample(const filter_t *f, int channels, const void *
 
     /* Silence before the clip fills the first window, and silence after it
      * the windows that reach past its end. The padding lets the last dot
-     * product read whole SIMD registers. */
+     * product read whole SIMD registers, and four-wide passes read further. */
     size_t hist = (size_t)f->width - 1;
     size_t reach = (size_t)((f->center + (int64_t)(count - 1) * f->down) / f->up) + f->width;
-    size_t len = (reach > hist + in_frames ? reach : hist + in_frames) + 8;
+    size_t len = (reach > hist + in_frames ? reach : hist + in_frames) + 8 + f->pad;
     float *b = malloc(sizeof(float) * len);
     if (!b)
         return RESAMPLER_NO_MEMORY;
@@ -537,8 +610,10 @@ resampler_status_t resampler_process(resampler_t *r, const void *in, size_t in_f
         return RESAMPLER_OK;
 
     size_t hist = (size_t)f->width - 1;
-    /* The padding lets the last dot product read whole SIMD registers. */
-    size_t need = hist + in_frames + 8;
+    /* The padding lets the last dot product read whole SIMD registers, and
+     * four-wide passes read further. */
+    size_t tail = 8 + (size_t)f->pad;
+    size_t need = hist + in_frames + tail;
     if (need > r->cap) {
         for (size_t c = 0; c < channels; c++) {
             float *grown = realloc(r->bufs[c], sizeof(float) * need);
@@ -553,7 +628,7 @@ resampler_status_t resampler_process(resampler_t *r, const void *in, size_t in_f
 
     for (size_t c = 0; c < channels; c++) {
         load_channel(r->bufs[c] + hist, bytes, in_frames, channels, c);
-        memset(r->bufs[c] + hist + in_frames, 0, sizeof(float) * 8);
+        memset(r->bufs[c] + hist + in_frames, 0, sizeof(float) * tail);
     }
 
     size_t count = resampler_output_count(r, in_frames);
