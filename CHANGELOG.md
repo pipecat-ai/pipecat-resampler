@@ -24,6 +24,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Resamplers between the same two rates share one filter, so each is built
   and held once per process.
 
+- Resampling between rates like 48 → 16, 24 → 16, 24 → 8 and 8 → 16 kHz
+  takes a quarter to two fifths less CPU with AVX2, and a tenth to a fifth
+  less with SSE2.
+
 ## [0.1.1] - 2026-11-07
 
 ### Fixed

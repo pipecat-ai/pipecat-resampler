@@ -77,14 +77,14 @@ One stream at 24 → 16 kHz, in microseconds per chunk:
 
 | Resampler | 10 ms | 20 ms | 40 ms |
 |---|---|---|---|
-| **pipecat-resampler** | 2.6 | 4.9 | 9.6 |
-| soxr VHQ | 5.3 | 7.7 | 12.7 |
-| soxr QQ | 3.2 | 4.4 | 6.8 |
-| samplerate `sinc_medium` | 55.9 | 104.0 | 199.9 |
-| PyAV | 28.7 | 29.3 | 31.6 |
-| Speex quality 7 | 9.1 | 14.6 | 26.2 |
+| **pipecat-resampler** | 2.0 | 3.9 | 7.5 |
+| soxr VHQ | 5.3 | 8.0 | 13.4 |
+| soxr QQ | 3.6 | 4.8 | 7.7 |
+| samplerate `sinc_medium` | 58.5 | 110.4 | 215.0 |
+| PyAV | 29.5 | 32.1 | 33.6 |
+| Speex quality 7 | 10.2 | 16.6 | 29.7 |
 
-pipecat-resampler is the fastest of the filtered options at every chunk size, and its lead grows as chunks get smaller.
+pipecat-resampler is the fastest at every chunk size, even against soxr QQ, which interpolates instead of filtering, and its lead grows as chunks get smaller.
 
 ### Streaming: by rate pair
 
@@ -92,14 +92,14 @@ One stream with 40 ms chunks, the size Pipecat's output transport sends, in micr
 
 | Resampler | 24 → 16 kHz | 24 → 8 kHz | 16 → 8 kHz | 8 → 16 kHz | 48 → 16 kHz | 44.1 → 16 kHz |
 |---|---|---|---|---|---|---|
-| **pipecat-resampler** | 9.7 | 8.8 | 6.2 | 7.7 | 18.1 | 18.2 |
-| soxr VHQ | 12.8 | 8.4 | 5.7 | 6.2 | 14.7 | 17.8 |
-| soxr QQ | 6.8 | 4.6 | 4.5 | 6.8 | 6.8 | 7.0 |
-| samplerate `sinc_medium` | 205.5 | 185.2 | 130.5 | 144.4 | 360.4 | 394.7 |
-| PyAV | 32.5 | 32.1 | 31.1 | 31.8 | 37.2 | 36.9 |
-| Speex quality 7 | 26.6 | 29.3 | 19.8 | 19.6 | 56.9 | 218.6 |
+| **pipecat-resampler** | 7.6 | 6.2 | 4.7 | 6.4 | 11.9 | 19.4 |
+| soxr VHQ | 13.5 | 8.9 | 6.1 | 6.8 | 15.3 | 19.0 |
+| soxr QQ | 7.4 | 5.1 | 4.9 | 7.5 | 7.8 | 7.7 |
+| samplerate `sinc_medium` | 214.9 | 197.2 | 138.7 | 155.6 | 381.6 | 410.9 |
+| PyAV | 34.2 | 34.1 | 33.0 | 33.5 | 34.0 | 36.4 |
+| Speex quality 7 | 29.1 | 33.0 | 21.6 | 21.5 | 62.0 | 241.0 |
 
-soxr VHQ uses less CPU at every pair but 24 → 16 kHz: under 10% less at 24 → 8, 16 → 8 and 44.1 → 16 kHz, and about a fifth less at 8 → 16 and 48 → 16 kHz, where its multistage design pays off. pipecat-resampler's slowest case here, 18 µs per 40 ms chunk, is under 0.05% of one core.
+pipecat-resampler uses less CPU than soxr VHQ at every pair but 44.1 → 16 kHz, where the two are about the same: its filter has too many phases to compute four outputs at a time. pipecat-resampler's slowest case here, 19 µs per 40 ms chunk, is under 0.05% of one core.
 
 ### Streaming: multiple streams
 
@@ -107,14 +107,14 @@ A process carrying many calls runs many streams at once. Here, 64 streams at the
 
 | Resampler | 24 → 16 kHz | 48 → 16 kHz | 44.1 → 16 kHz |
 |---|---|---|---|
-| **pipecat-resampler** | 9.5 | 17.4 | 17.6 |
-| soxr VHQ | 15.7 | 18.5 | 23.4 |
-| soxr QQ | 6.8 | 7.1 | 7.1 |
-| samplerate `sinc_medium` | 200.4 | 355.9 | 393.5 |
-| PyAV | 32.1 | 34.2 | 36.2 |
-| Speex quality 7 | 26.3 | 55.3 | 216.3 |
+| **pipecat-resampler** | 7.7 | 11.9 | 19.2 |
+| soxr VHQ | 16.9 | 20.2 | 25.6 |
+| soxr QQ | 7.6 | 7.9 | 7.8 |
+| samplerate `sinc_medium` | 214.3 | 382.0 | 408.8 |
+| PyAV | 33.7 | 36.8 | 37.7 |
+| Speex quality 7 | 29.4 | 62.1 | 241.5 |
 
-pipecat-resampler costs the same per chunk as with one stream, because the streams share one filter and it stays in the CPU's cache. soxr VHQ costs a fifth to a third more than alone, and more than pipecat-resampler at all three pairs.
+pipecat-resampler costs the same per chunk as with one stream, because the streams share one filter and it stays in the CPU's cache. soxr VHQ costs a quarter to a third more than alone, and more than pipecat-resampler at all three pairs.
 
 ### Whole clips: quality
 
@@ -137,11 +137,11 @@ At 24 → 16 kHz, in milliseconds per clip:
 
 | Resampler | 0.2 s | 2 s | 8 s |
 |---|---|---|---|
-| **pipecat-resampler** | 0.05 | 0.47 | 1.88 |
-| soxr VHQ | 0.15 | 0.64 | 2.15 |
-| soxr HQ | 0.08 | 0.45 | 1.60 |
+| **pipecat-resampler** | 0.04 | 0.37 | 1.48 |
+| soxr VHQ | 0.16 | 0.74 | 2.32 |
+| soxr HQ | 0.09 | 0.49 | 1.74 |
 
-pipecat-resampler is the quickest on short clips, because a `Resampler` designs its filter once while `soxr.resample()` designs one on every call. soxr HQ is faster on longer clips.
+pipecat-resampler is the quickest at every length, most of all on short clips, because a `Resampler` designs its filter once while `soxr.resample()` designs one on every call.
 
 ### Whole clips: by rate pair
 
@@ -149,11 +149,11 @@ For 2 s clips, in milliseconds per clip:
 
 | Resampler | 24 → 16 kHz | 24 → 8 kHz | 16 → 8 kHz | 8 → 16 kHz | 48 → 16 kHz | 44.1 → 16 kHz |
 |---|---|---|---|---|---|---|
-| **pipecat-resampler** | 0.49 | 0.44 | 0.29 | 0.38 | 0.86 | 0.84 |
-| soxr VHQ | 0.65 | 0.40 | 0.23 | 0.27 | 0.72 | 0.99 |
-| soxr HQ | 0.45 | 0.26 | 0.16 | 0.21 | 0.50 | 0.70 |
+| **pipecat-resampler** | 0.38 | 0.30 | 0.23 | 0.30 | 0.59 | 0.93 |
+| soxr VHQ | 0.74 | 0.45 | 0.24 | 0.35 | 0.77 | 1.16 |
+| soxr HQ | 0.48 | 0.27 | 0.17 | 0.24 | 0.53 | 0.72 |
 
-soxr HQ is faster at every pair, and soxr VHQ at all but 24 → 16 and 44.1 → 16 kHz.
+pipecat-resampler is faster than soxr VHQ at 24 → 16, 24 → 8, 48 → 16 and 44.1 → 16 kHz, and about the same at 16 → 8 and 8 → 16 kHz. soxr HQ is faster at every pair but 24 → 16 kHz.
 
 ## How it works
 
@@ -167,9 +167,9 @@ soxr HQ is faster at every pair, and soxr VHQ at all but 24 → 16 and 44.1 → 
 
 **Shared filters.** Resamplers between the same two rates share one filter, built with the first and freed with the last. That saves the most at 44.1 kHz, where a filter takes about 200 KB and a few milliseconds to build, and it keeps many streams fast.
 
-**Cost.** Every filter tap costs about the same, around 0.08 ns here, and the filter does about 115 multiply-adds for every sample at the higher of the two rates. So 48 → 16 kHz costs twice what 24 → 16 kHz does, and 44.1 kHz about the same as 48 kHz.
+**Cost.** The filter does about 115 multiply-adds for every sample at the higher of the two rates, so 48 kHz input needs twice the work of 24 kHz input. Rates like 48 → 16, 24 → 16 and 8 → 16 kHz have a filter with at most four phases, and four outputs that share a phase are computed in one pass, which loads each tap once for all four. The 44.1 kHz family has 160 phases or more, too many for that, so it computes one output at a time.
 
-**Kernels.** The inner loop uses the fastest kernel the CPU supports: AVX2 with FMA or SSE2 on x86-64, NEON on ARM64, and plain C elsewhere. Filter phases with symmetric taps add mirrored samples before multiplying, which halves the multiplications. Set `PIPECAT_RESAMPLER_KERNEL` to `generic`, `sse2`, `avx2` or `neon` to force a kernel.
+**Kernels.** The inner loop uses the fastest kernel the CPU supports: AVX2 with FMA or SSE2 on x86-64, NEON on ARM64, and plain C elsewhere. AVX2 and SSE2 compute four outputs per pass where the filter allows it. NEON and plain C compute one at a time, and add mirrored samples before multiplying where a phase's taps are symmetric, which halves the multiplications. Set `PIPECAT_RESAMPLER_KERNEL` to `generic`, `sse2`, `avx2` or `neon` to force a kernel.
 
 ## Development
 
