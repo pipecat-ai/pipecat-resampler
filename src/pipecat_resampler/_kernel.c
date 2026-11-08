@@ -43,7 +43,10 @@
 /* Filters with at most this many phases compute four outputs per pass, where
  * the kernel can. Every output of a filter is computed the same way, so how
  * the input is chunked doesn't change the result, and with more phases too
- * few outputs in a chunk share each phase for four at a time to pay off. */
+ * few outputs in a chunk share each phase for four at a time to pay off.
+ * Where the four-wide pass gives each output exactly what the one-wide pass
+ * does, any filter computes four at a time where four outputs in a chunk
+ * share a phase, and one at a time elsewhere. */
 #define BLOCK_MAX_UP 4
 
 typedef float (*dot_fn)(const float *a, const float *t, int n);
@@ -71,6 +74,7 @@ struct filter {
     dot_fn dot;
     fold_fn fold; /* NULL where the plain dot product is faster */
     dot4_fn dot4; /* NULL where outputs are computed one at a time */
+    int exact4;   /* dot4 gives each window exactly what dot does */
     int pad;      /* samples past the input that dot4 may read */
     const char *kernel;
 };
@@ -254,20 +258,54 @@ static float dot_neon(const float *a, const float *t, int n) {
     return vaddvq_f32(vaddq_f32(vaddq_f32(a0, a1), vaddq_f32(a2, a3)));
 }
 
-static inline float32x4_t reverse_neon(float32x4_t v) {
-    v = vrev64q_f32(v);
-    return vextq_f32(v, v, 2);
-}
-
-static float fold_neon(const float *w, int span, const float *t, int hp) {
-    float32x4_t a0 = vdupq_n_f32(0.0f), a1 = vdupq_n_f32(0.0f);
-    for (int j = 0; j < hp; j += 8) {
-        float32x4_t r0 = reverse_neon(vld1q_f32(w + span - 4 - j));
-        float32x4_t r1 = reverse_neon(vld1q_f32(w + span - 8 - j));
-        a0 = vfmaq_f32(a0, vaddq_f32(vld1q_f32(w + j), r0), vld1q_f32(t + j));
-        a1 = vfmaq_f32(a1, vaddq_f32(vld1q_f32(w + j + 4), r1), vld1q_f32(t + j + 4));
+/* Loads each tap once for all four windows. Each window keeps four sums and
+ * adds them up the way dot_neon does, so its result is exactly dot_neon's. */
+static void dot4_neon(const float *a, ptrdiff_t stride, const float *t, int n, float *out) {
+    const float *a0 = a, *a1 = a + stride, *a2 = a + 2 * stride, *a3 = a + 3 * stride;
+    float32x4_t s0 = vdupq_n_f32(0.0f), s1 = vdupq_n_f32(0.0f);
+    float32x4_t s2 = vdupq_n_f32(0.0f), s3 = vdupq_n_f32(0.0f);
+    float32x4_t u0 = vdupq_n_f32(0.0f), u1 = vdupq_n_f32(0.0f);
+    float32x4_t u2 = vdupq_n_f32(0.0f), u3 = vdupq_n_f32(0.0f);
+    float32x4_t v0 = vdupq_n_f32(0.0f), v1 = vdupq_n_f32(0.0f);
+    float32x4_t v2 = vdupq_n_f32(0.0f), v3 = vdupq_n_f32(0.0f);
+    float32x4_t w0 = vdupq_n_f32(0.0f), w1 = vdupq_n_f32(0.0f);
+    float32x4_t w2 = vdupq_n_f32(0.0f), w3 = vdupq_n_f32(0.0f);
+    int j = 0;
+    for (; j + 16 <= n; j += 16) {
+        float32x4_t t0 = vld1q_f32(t + j), t1 = vld1q_f32(t + j + 4);
+        float32x4_t t2 = vld1q_f32(t + j + 8), t3 = vld1q_f32(t + j + 12);
+        s0 = vfmaq_f32(s0, vld1q_f32(a0 + j), t0);
+        s1 = vfmaq_f32(s1, vld1q_f32(a1 + j), t0);
+        s2 = vfmaq_f32(s2, vld1q_f32(a2 + j), t0);
+        s3 = vfmaq_f32(s3, vld1q_f32(a3 + j), t0);
+        u0 = vfmaq_f32(u0, vld1q_f32(a0 + j + 4), t1);
+        u1 = vfmaq_f32(u1, vld1q_f32(a1 + j + 4), t1);
+        u2 = vfmaq_f32(u2, vld1q_f32(a2 + j + 4), t1);
+        u3 = vfmaq_f32(u3, vld1q_f32(a3 + j + 4), t1);
+        v0 = vfmaq_f32(v0, vld1q_f32(a0 + j + 8), t2);
+        v1 = vfmaq_f32(v1, vld1q_f32(a1 + j + 8), t2);
+        v2 = vfmaq_f32(v2, vld1q_f32(a2 + j + 8), t2);
+        v3 = vfmaq_f32(v3, vld1q_f32(a3 + j + 8), t2);
+        w0 = vfmaq_f32(w0, vld1q_f32(a0 + j + 12), t3);
+        w1 = vfmaq_f32(w1, vld1q_f32(a1 + j + 12), t3);
+        w2 = vfmaq_f32(w2, vld1q_f32(a2 + j + 12), t3);
+        w3 = vfmaq_f32(w3, vld1q_f32(a3 + j + 12), t3);
     }
-    return vaddvq_f32(vaddq_f32(a0, a1));
+    for (; j < n; j += 8) {
+        float32x4_t t0 = vld1q_f32(t + j), t1 = vld1q_f32(t + j + 4);
+        s0 = vfmaq_f32(s0, vld1q_f32(a0 + j), t0);
+        s1 = vfmaq_f32(s1, vld1q_f32(a1 + j), t0);
+        s2 = vfmaq_f32(s2, vld1q_f32(a2 + j), t0);
+        s3 = vfmaq_f32(s3, vld1q_f32(a3 + j), t0);
+        u0 = vfmaq_f32(u0, vld1q_f32(a0 + j + 4), t1);
+        u1 = vfmaq_f32(u1, vld1q_f32(a1 + j + 4), t1);
+        u2 = vfmaq_f32(u2, vld1q_f32(a2 + j + 4), t1);
+        u3 = vfmaq_f32(u3, vld1q_f32(a3 + j + 4), t1);
+    }
+    out[0] = vaddvq_f32(vaddq_f32(vaddq_f32(s0, u0), vaddq_f32(v0, w0)));
+    out[1] = vaddvq_f32(vaddq_f32(vaddq_f32(s1, u1), vaddq_f32(v1, w1)));
+    out[2] = vaddvq_f32(vaddq_f32(vaddq_f32(s2, u2), vaddq_f32(v2, w2)));
+    out[3] = vaddvq_f32(vaddq_f32(vaddq_f32(s3, u3), vaddq_f32(v3, w3)));
 }
 #endif
 
@@ -297,7 +335,9 @@ static void choose_kernel(filter_t *f) {
 #endif
 #if RS_NEON
     f->dot = dot_neon;
-    f->fold = fold_neon;
+    f->fold = NULL;
+    f->dot4 = dot4_neon;
+    f->exact4 = 1;
     f->kernel = "neon";
 #endif
 }
@@ -425,9 +465,11 @@ filter_t *filter_new(int in_rate, int out_rate, resampler_status_t *status) {
     int divisor = gcd(in_rate, out_rate);
     f->up = out_rate / divisor;
     f->down = in_rate / divisor;
-    if (f->up > BLOCK_MAX_UP)
+    f->step_whole = f->down / f->up;
+    f->step_frac = f->down % f->up;
+    if (f->up > BLOCK_MAX_UP && !f->exact4)
         f->dot4 = NULL;
-    f->pad = f->dot4 ? 3 * f->down : 0;
+    f->pad = f->dot4 && !f->exact4 ? 3 * f->down : 0;
 
     double up_rate = (double)in_rate * f->up;
     double nyquist = (in_rate < out_rate ? in_rate : out_rate) / 2.0;
@@ -458,16 +500,16 @@ filter_t *filter_new(int in_rate, int out_rate, resampler_status_t *status) {
         *status = RESAMPLER_NO_MEMORY;
         return NULL;
     }
-    for (int p = 0; p < f->up; p++) {
+    /* Each output's phase is step_frac past the last one's, so the phases are
+     * stored in that order, and a run of outputs reads their taps in a line. */
+    for (int k = 0; k < f->up; k++) {
+        int p = (int)((int64_t)k * f->step_frac % f->up);
         for (int j = 0; j < f->width; j++)
             row[j] = (float)h[(size_t)(f->width - 1 - j) * f->up + p];
-        set_up_phase(&f->phases[p], row, f->width, f->fold && !f->dot4, f->arena + stride * p);
+        set_up_phase(&f->phases[p], row, f->width, f->fold && !f->dot4, f->arena + stride * k);
     }
     free(h);
     free(row);
-
-    f->step_whole = f->down / f->up;
-    f->step_frac = f->down % f->up;
     return f;
 }
 
@@ -512,8 +554,10 @@ static void load_channel(float *b, const unsigned char *bytes, size_t frames, si
 /* Filters one channel's buffer into every stride-th sample of out, four
  * outputs per pass. Outputs n, n + up, n + 2 up and n + 3 up use the same
  * phase, with windows down samples apart, so each block of 4 up outputs
- * starts 4 down samples after the last, on the same phase. Lanes past count
- * read the padding, and their results are dropped. */
+ * starts 4 down samples after the last, on the same phase. Where fewer than
+ * four outputs on a phase are left, an exact kernel computes them one at a
+ * time; otherwise lanes past count read the padding, and their results are
+ * dropped. */
 static void filter_channel4(const filter_t *f, const float *b, int64_t offset, size_t count,
                             size_t stride, int16_t *out) {
     size_t up = (size_t)f->up;
@@ -526,7 +570,11 @@ static void filter_channel4(const filter_t *f, const float *b, int64_t offset, s
         for (size_t k = 0; k < up && k < left; k++) {
             const phase_t *ph = &f->phases[phase];
             float v[4];
-            f->dot4(b + start, f->down, ph->taps, ph->len, v);
+            if (k + 3 * up < left || !f->exact4)
+                f->dot4(b + start, f->down, ph->taps, ph->len, v);
+            else
+                for (size_t i = 0; k + i * up < left; i++)
+                    v[i] = f->dot(b + start + (int64_t)i * f->down, ph->taps, ph->len);
             for (size_t i = 0; i < 4 && k + i * up < left; i++)
                 out[(first + k + i * up) * stride] = to_int16(v[i]);
             start += f->step_whole;

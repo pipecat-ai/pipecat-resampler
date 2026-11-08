@@ -28,6 +28,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   takes a quarter to two fifths less CPU with AVX2, and a tenth to a fifth
   less with SSE2.
 
+- With NEON, on ARM64, rates like 48 → 16, 24 → 16, 24 → 8 and 8 → 16 kHz
+  take a third to nearly half less CPU. The 44.1 kHz family takes about half
+  as much with 40 ms chunks and whole clips, and up to a quarter less with 10
+  and 20 ms chunks.
+
 ## [0.1.1] - 2026-11-07
 
 ### Fixed
