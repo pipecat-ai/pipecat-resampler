@@ -144,6 +144,31 @@ static float fold_sse2(const float *w, int span, const float *t, int hp) {
     }
     return hsum_sse(_mm_add_ps(a0, a1));
 }
+
+/* Loads each tap once for all four windows. Each window keeps its own two
+ * sums, so its result doesn't depend on the other three. */
+static void dot4_sse2(const float *a, ptrdiff_t stride, const float *t, int n, float *out) {
+    const float *a0 = a, *a1 = a + stride, *a2 = a + 2 * stride, *a3 = a + 3 * stride;
+    __m128 s0 = _mm_setzero_ps(), s1 = _mm_setzero_ps();
+    __m128 s2 = _mm_setzero_ps(), s3 = _mm_setzero_ps();
+    __m128 u0 = _mm_setzero_ps(), u1 = _mm_setzero_ps();
+    __m128 u2 = _mm_setzero_ps(), u3 = _mm_setzero_ps();
+    for (int j = 0; j < n; j += 8) {
+        __m128 t0 = _mm_load_ps(t + j), t1 = _mm_load_ps(t + j + 4);
+        s0 = _mm_add_ps(s0, _mm_mul_ps(_mm_loadu_ps(a0 + j), t0));
+        s1 = _mm_add_ps(s1, _mm_mul_ps(_mm_loadu_ps(a1 + j), t0));
+        s2 = _mm_add_ps(s2, _mm_mul_ps(_mm_loadu_ps(a2 + j), t0));
+        s3 = _mm_add_ps(s3, _mm_mul_ps(_mm_loadu_ps(a3 + j), t0));
+        u0 = _mm_add_ps(u0, _mm_mul_ps(_mm_loadu_ps(a0 + j + 4), t1));
+        u1 = _mm_add_ps(u1, _mm_mul_ps(_mm_loadu_ps(a1 + j + 4), t1));
+        u2 = _mm_add_ps(u2, _mm_mul_ps(_mm_loadu_ps(a2 + j + 4), t1));
+        u3 = _mm_add_ps(u3, _mm_mul_ps(_mm_loadu_ps(a3 + j + 4), t1));
+    }
+    out[0] = hsum_sse(_mm_add_ps(s0, u0));
+    out[1] = hsum_sse(_mm_add_ps(s1, u1));
+    out[2] = hsum_sse(_mm_add_ps(s2, u2));
+    out[3] = hsum_sse(_mm_add_ps(s3, u3));
+}
 #endif
 
 #if RS_AVX2
@@ -257,6 +282,7 @@ static void choose_kernel(filter_t *f) {
 #if RS_SSE2
     f->dot = dot_sse2;
     f->fold = fold_sse2;
+    f->dot4 = dot4_sse2;
     f->kernel = "sse2";
     if (wanted && strcmp(wanted, "sse2") == 0)
         return;
