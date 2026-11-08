@@ -50,26 +50,30 @@ typedef struct {
     float *taps;
 } phase_t;
 
-struct resampler {
+struct filter {
     int in_rate, out_rate;
-    int channels;
     int passthrough;
     int up, down, width;
+    /* The middle tap, on the input upsampled by up. */
+    int64_t center;
+    int64_t step_whole;
+    int step_frac;
     phase_t *phases;
     float *arena;
+    dot_fn dot;
+    fold_fn fold;
+    const char *kernel;
+};
+
+struct resampler {
+    const filter_t *f;
+    int channels;
     /* One buffer per channel: width - 1 samples of history, the input, then
      * padding. */
     float **bufs;
     size_t cap;
     int pending; /* audio has gone in since the last reset */
     int64_t offset;
-    /* The filter's middle tap, on the input upsampled by up. */
-    int64_t center;
-    int64_t step_whole;
-    int step_frac;
-    dot_fn dot;
-    fold_fn fold;
-    const char *kernel;
 };
 
 /* ---- Dot products. n and hp are multiples of 8; t is 32-byte aligned. ---- */
@@ -215,31 +219,31 @@ static float fold_neon(const float *w, int span, const float *t, int hp) {
 }
 #endif
 
-static void choose_kernel(resampler_t *r) {
+static void choose_kernel(filter_t *f) {
     const char *wanted = getenv("PIPECAT_RESAMPLER_KERNEL");
-    r->dot = dot_generic;
-    r->fold = fold_generic;
-    r->kernel = "generic";
+    f->dot = dot_generic;
+    f->fold = fold_generic;
+    f->kernel = "generic";
     if (wanted && strcmp(wanted, "generic") == 0)
         return;
 #if RS_SSE2
-    r->dot = dot_sse2;
-    r->fold = fold_sse2;
-    r->kernel = "sse2";
+    f->dot = dot_sse2;
+    f->fold = fold_sse2;
+    f->kernel = "sse2";
     if (wanted && strcmp(wanted, "sse2") == 0)
         return;
 #endif
 #if RS_AVX2
     if (has_avx2()) {
-        r->dot = dot_avx2;
-        r->fold = fold_avx2;
-        r->kernel = "avx2";
+        f->dot = dot_avx2;
+        f->fold = fold_avx2;
+        f->kernel = "avx2";
     }
 #endif
 #if RS_NEON
-    r->dot = dot_neon;
-    r->fold = fold_neon;
-    r->kernel = "neon";
+    f->dot = dot_neon;
+    f->fold = fold_neon;
+    f->kernel = "neon";
 #endif
 }
 
@@ -287,9 +291,9 @@ static void aligned_free32(void *p) {
 /* A Kaiser-windowed sinc low-pass with taps coefficients, padded with zeros
  * to length, to be split into one reversed filter per phase: phase p, tap j
  * is h[(width - 1 - j) * up + p]. */
-static double *design_taps(const resampler_t *r, long length, long taps) {
-    double up_rate = (double)r->in_rate * r->up;
-    double nyquist = (r->in_rate < r->out_rate ? r->in_rate : r->out_rate) / 2.0;
+static double *design_taps(const filter_t *f, long length, long taps) {
+    double up_rate = (double)f->in_rate * f->up;
+    double nyquist = (f->in_rate < f->out_rate ? f->in_rate : f->out_rate) / 2.0;
     double transition = nyquist * (1.0 - PASSBAND);
     double cutoff = nyquist - transition / 2.0;
     double beta = 0.1102 * (ATTENUATION_DB - 8.7);
@@ -307,7 +311,7 @@ static double *design_taps(const resampler_t *r, long length, long taps) {
         h[k] = sinc * window;
         sum += h[k];
     }
-    double scale = r->up / sum;
+    double scale = f->up / sum;
     for (long k = 0; k < taps; k++)
         h[k] *= scale;
     return h;
@@ -342,116 +346,94 @@ static void set_up_phase(phase_t *ph, const float *taps, int width, float *store
     }
 }
 
-resampler_t *resampler_new(int in_rate, int out_rate, int channels, resampler_status_t *status) {
+/* ---- Filters ---- */
+
+filter_t *filter_new(int in_rate, int out_rate, resampler_status_t *status) {
     *status = RESAMPLER_OK;
     if (in_rate <= 0 || out_rate <= 0) {
         *status = RESAMPLER_BAD_RATE;
         return NULL;
     }
-    if (channels <= 0) {
-        *status = RESAMPLER_BAD_CHANNELS;
-        return NULL;
-    }
-    resampler_t *r = calloc(1, sizeof *r);
-    if (!r) {
+    filter_t *f = calloc(1, sizeof *f);
+    if (!f) {
         *status = RESAMPLER_NO_MEMORY;
         return NULL;
     }
-    r->in_rate = in_rate;
-    r->out_rate = out_rate;
-    r->channels = channels;
-    choose_kernel(r);
+    f->in_rate = in_rate;
+    f->out_rate = out_rate;
+    choose_kernel(f);
     if (in_rate == out_rate) {
-        r->passthrough = 1;
-        return r;
+        f->passthrough = 1;
+        return f;
     }
 
     int divisor = gcd(in_rate, out_rate);
-    r->up = out_rate / divisor;
-    r->down = in_rate / divisor;
+    f->up = out_rate / divisor;
+    f->down = in_rate / divisor;
 
-    double up_rate = (double)in_rate * r->up;
+    double up_rate = (double)in_rate * f->up;
     double nyquist = (in_rate < out_rate ? in_rate : out_rate) / 2.0;
     double transition = nyquist * (1.0 - PASSBAND);
     double estimate = (ATTENUATION_DB - 7.95) / (2.285 * 2.0 * RS_PI * transition / up_rate) + 1.0;
     double whole = ceil(estimate);
-    if (whole + r->up > (double)MAX_TAPS) {
-        free(r);
+    if (whole + f->up > (double)MAX_TAPS) {
+        free(f);
         *status = RESAMPLER_TOO_LARGE;
         return NULL;
     }
     /* An odd number of taps puts the filter's middle, where each output sits,
      * on a whole upsampled sample. Zeros pad it to whole phases. */
     long taps = (long)whole | 1;
-    r->width = (int)((taps + r->up - 1) / r->up);
-    long length = (long)r->width * r->up;
-    r->center = (taps - 1) / 2;
+    f->width = (int)((taps + f->up - 1) / f->up);
+    long length = (long)f->width * f->up;
+    f->center = (taps - 1) / 2;
 
-    double *h = design_taps(r, length, taps);
-    float *row = malloc(sizeof(float) * r->width);
-    size_t stride = (size_t)round8(r->width + 8);
-    r->phases = calloc((size_t)r->up, sizeof(phase_t));
-    r->arena = aligned_alloc32(sizeof(float) * stride * r->up);
-    r->bufs = calloc((size_t)channels, sizeof(float *));
-    if (!h || !row || !r->phases || !r->arena || !r->bufs) {
+    double *h = design_taps(f, length, taps);
+    float *row = malloc(sizeof(float) * f->width);
+    size_t stride = (size_t)round8(f->width + 8);
+    f->phases = calloc((size_t)f->up, sizeof(phase_t));
+    f->arena = aligned_alloc32(sizeof(float) * stride * f->up);
+    if (!h || !row || !f->phases || !f->arena) {
         free(h);
         free(row);
-        resampler_free(r);
+        filter_free(f);
         *status = RESAMPLER_NO_MEMORY;
         return NULL;
     }
-    for (int p = 0; p < r->up; p++) {
-        for (int j = 0; j < r->width; j++)
-            row[j] = (float)h[(size_t)(r->width - 1 - j) * r->up + p];
-        set_up_phase(&r->phases[p], row, r->width, r->arena + stride * p);
+    for (int p = 0; p < f->up; p++) {
+        for (int j = 0; j < f->width; j++)
+            row[j] = (float)h[(size_t)(f->width - 1 - j) * f->up + p];
+        set_up_phase(&f->phases[p], row, f->width, f->arena + stride * p);
     }
     free(h);
     free(row);
 
-    r->step_whole = r->down / r->up;
-    r->step_frac = r->down % r->up;
-    return r;
+    f->step_whole = f->down / f->up;
+    f->step_frac = f->down % f->up;
+    return f;
 }
 
-void resampler_free(resampler_t *r) {
-    if (!r)
+void filter_free(filter_t *f) {
+    if (!f)
         return;
-    if (r->bufs)
-        for (int c = 0; c < r->channels; c++)
-            free(r->bufs[c]);
-    free(r->bufs);
-    aligned_free32(r->arena);
-    free(r->phases);
-    free(r);
+    aligned_free32(f->arena);
+    free(f->phases);
+    free(f);
 }
 
-int resampler_channels(const resampler_t *r) { return r->channels; }
-
-size_t resampler_output_count(const resampler_t *r, size_t in_frames) {
-    if (r->passthrough)
-        return in_frames;
-    int64_t total = (int64_t)in_frames * r->up - r->offset;
-    return total > 0 ? (size_t)((total + r->down - 1) / r->down) : 0;
-}
-
-size_t resampler_delay(const resampler_t *r) {
-    if (r->passthrough)
+size_t filter_delay(const filter_t *f) {
+    if (f->passthrough)
         return 0;
-    return (size_t)((r->center + r->up - 1) / r->up);
+    return (size_t)((f->center + f->up - 1) / f->up);
 }
 
-void resampler_reset(resampler_t *r) {
-    if (r->bufs)
-        for (int c = 0; c < r->channels; c++)
-            if (r->bufs[c])
-                memset(r->bufs[c], 0, sizeof(float) * (r->width - 1));
-    r->offset = 0;
-    r->pending = 0;
+const char *filter_kernel(const filter_t *f) { return f->kernel; }
+
+size_t filter_resample_count(const filter_t *f, size_t in_frames) {
+    if (f->passthrough)
+        return in_frames;
+    return (size_t)(((int64_t)in_frames * 2 * f->up + f->down) / (2 * f->down));
 }
-
-int resampler_pending(const resampler_t *r) { return r->pending; }
-
-const char *resampler_kernel(const resampler_t *r) { return r->kernel; }
 
 static inline int16_t to_int16(float v) {
     long rounded = lrintf(v);
@@ -469,40 +451,109 @@ static void load_channel(float *b, const unsigned char *bytes, size_t frames, si
     }
 }
 
-/* Filters one channel's buffer into every channels-th sample of out. */
-static void filter_channel(const resampler_t *r, const float *b, int64_t offset, size_t count,
-                           int16_t *out) {
-    size_t stride = (size_t)r->channels;
+/* Filters one channel's buffer into every stride-th sample of out. */
+static void filter_channel(const filter_t *f, const float *b, int64_t offset, size_t count,
+                           size_t stride, int16_t *out) {
     /* Output n sits at n * down on the input upsampled by up. The offset is
      * where the first output sits relative to the first input there. */
-    int64_t start = offset / r->up;
-    int phase = (int)(offset % r->up);
+    int64_t start = offset / f->up;
+    int phase = (int)(offset % f->up);
     for (size_t n = 0; n < count; n++) {
-        const phase_t *ph = &r->phases[phase];
+        const phase_t *ph = &f->phases[phase];
         const float *w = b + start;
-        float v = ph->fold ? r->fold(w, ph->len, ph->taps, ph->hp) : r->dot(w, ph->taps, ph->len);
+        float v = ph->fold ? f->fold(w, ph->len, ph->taps, ph->hp) : f->dot(w, ph->taps, ph->len);
         out[n * stride] = to_int16(v);
-        start += r->step_whole;
-        phase += r->step_frac;
-        if (phase >= r->up) {
-            phase -= r->up;
+        start += f->step_whole;
+        phase += f->step_frac;
+        if (phase >= f->up) {
+            phase -= f->up;
             start++;
         }
     }
 }
 
+resampler_status_t filter_resample(const filter_t *f, int channels, const void *in,
+                                   size_t in_frames, int16_t *out) {
+    const unsigned char *bytes = in;
+    size_t stride = (size_t)channels;
+    if (f->passthrough) {
+        memcpy(out, bytes, sizeof(int16_t) * in_frames * stride);
+        return RESAMPLER_OK;
+    }
+    size_t count = filter_resample_count(f, in_frames);
+    if (!count)
+        return RESAMPLER_OK;
+
+    /* Silence before the clip fills the first window, and silence after it
+     * the windows that reach past its end. The padding lets the last dot
+     * product read whole SIMD registers. */
+    size_t hist = (size_t)f->width - 1;
+    size_t reach = (size_t)((f->center + (int64_t)(count - 1) * f->down) / f->up) + f->width;
+    size_t len = (reach > hist + in_frames ? reach : hist + in_frames) + 8;
+    float *b = malloc(sizeof(float) * len);
+    if (!b)
+        return RESAMPLER_NO_MEMORY;
+    memset(b, 0, sizeof(float) * hist);
+    memset(b + hist + in_frames, 0, sizeof(float) * (len - hist - in_frames));
+    for (size_t c = 0; c < stride; c++) {
+        load_channel(b + hist, bytes, in_frames, stride, c);
+        filter_channel(f, b, f->center, count, stride, out + c);
+    }
+    free(b);
+    return RESAMPLER_OK;
+}
+
+/* ---- Streaming resamplers ---- */
+
+resampler_t *resampler_new(const filter_t *f, int channels, resampler_status_t *status) {
+    *status = RESAMPLER_OK;
+    if (channels <= 0) {
+        *status = RESAMPLER_BAD_CHANNELS;
+        return NULL;
+    }
+    resampler_t *r = calloc(1, sizeof *r);
+    if (r)
+        r->bufs = calloc((size_t)channels, sizeof(float *));
+    if (!r || !r->bufs) {
+        free(r);
+        *status = RESAMPLER_NO_MEMORY;
+        return NULL;
+    }
+    r->f = f;
+    r->channels = channels;
+    return r;
+}
+
+void resampler_free(resampler_t *r) {
+    if (!r)
+        return;
+    for (int c = 0; c < r->channels; c++)
+        free(r->bufs[c]);
+    free(r->bufs);
+    free(r);
+}
+
+size_t resampler_output_count(const resampler_t *r, size_t in_frames) {
+    const filter_t *f = r->f;
+    if (f->passthrough)
+        return in_frames;
+    int64_t total = (int64_t)in_frames * f->up - r->offset;
+    return total > 0 ? (size_t)((total + f->down - 1) / f->down) : 0;
+}
+
 resampler_status_t resampler_process(resampler_t *r, const void *in, size_t in_frames,
                                      int16_t *out) {
+    const filter_t *f = r->f;
     const unsigned char *bytes = in;
     size_t channels = (size_t)r->channels;
-    if (r->passthrough) {
+    if (f->passthrough) {
         memcpy(out, bytes, sizeof(int16_t) * in_frames * channels);
         return RESAMPLER_OK;
     }
     if (!in_frames)
         return RESAMPLER_OK;
 
-    size_t hist = (size_t)r->width - 1;
+    size_t hist = (size_t)f->width - 1;
     /* The padding lets the last dot product read whole SIMD registers. */
     size_t need = hist + in_frames + 8;
     if (need > r->cap) {
@@ -524,47 +575,20 @@ resampler_status_t resampler_process(resampler_t *r, const void *in, size_t in_f
 
     size_t count = resampler_output_count(r, in_frames);
     for (size_t c = 0; c < channels; c++) {
-        filter_channel(r, r->bufs[c], r->offset, count, out + c);
+        filter_channel(f, r->bufs[c], r->offset, count, channels, out + c);
         memmove(r->bufs[c], r->bufs[c] + in_frames, sizeof(float) * hist);
     }
-    r->offset += (int64_t)count * r->down - (int64_t)in_frames * r->up;
+    r->offset += (int64_t)count * f->down - (int64_t)in_frames * f->up;
     r->pending = 1;
     return RESAMPLER_OK;
 }
 
-size_t resampler_once_count(const resampler_t *r, size_t in_frames) {
-    if (r->passthrough)
-        return in_frames;
-    return (size_t)(((int64_t)in_frames * 2 * r->up + r->down) / (2 * r->down));
+void resampler_reset(resampler_t *r) {
+    for (int c = 0; c < r->channels; c++)
+        if (r->bufs[c])
+            memset(r->bufs[c], 0, sizeof(float) * (r->f->width - 1));
+    r->offset = 0;
+    r->pending = 0;
 }
 
-resampler_status_t resampler_once(const resampler_t *r, const void *in, size_t in_frames,
-                                  int16_t *out) {
-    const unsigned char *bytes = in;
-    size_t channels = (size_t)r->channels;
-    if (r->passthrough) {
-        memcpy(out, bytes, sizeof(int16_t) * in_frames * channels);
-        return RESAMPLER_OK;
-    }
-    size_t count = resampler_once_count(r, in_frames);
-    if (!count)
-        return RESAMPLER_OK;
-
-    /* Silence before the clip fills the first window, and silence after it
-     * the windows that reach past its end. The padding lets the last dot
-     * product read whole SIMD registers. */
-    size_t hist = (size_t)r->width - 1;
-    size_t reach = (size_t)((r->center + (int64_t)(count - 1) * r->down) / r->up) + r->width;
-    size_t len = (reach > hist + in_frames ? reach : hist + in_frames) + 8;
-    float *b = malloc(sizeof(float) * len);
-    if (!b)
-        return RESAMPLER_NO_MEMORY;
-    memset(b, 0, sizeof(float) * hist);
-    memset(b + hist + in_frames, 0, sizeof(float) * (len - hist - in_frames));
-    for (size_t c = 0; c < channels; c++) {
-        load_channel(b + hist, bytes, in_frames, channels, c);
-        filter_channel(r, b, r->center, count, out + c);
-    }
-    free(b);
-    return RESAMPLER_OK;
-}
+int resampler_pending(const resampler_t *r) { return r->pending; }
