@@ -465,6 +465,8 @@ filter_t *filter_new(int in_rate, int out_rate, resampler_status_t *status) {
     int divisor = gcd(in_rate, out_rate);
     f->up = out_rate / divisor;
     f->down = in_rate / divisor;
+    f->step_whole = f->down / f->up;
+    f->step_frac = f->down % f->up;
     if (f->up > BLOCK_MAX_UP && !f->exact4)
         f->dot4 = NULL;
     f->pad = f->dot4 && !f->exact4 ? 3 * f->down : 0;
@@ -498,16 +500,16 @@ filter_t *filter_new(int in_rate, int out_rate, resampler_status_t *status) {
         *status = RESAMPLER_NO_MEMORY;
         return NULL;
     }
-    for (int p = 0; p < f->up; p++) {
+    /* Each output's phase is step_frac past the last one's, so the phases are
+     * stored in that order, and a run of outputs reads their taps in a line. */
+    for (int k = 0; k < f->up; k++) {
+        int p = (int)((int64_t)k * f->step_frac % f->up);
         for (int j = 0; j < f->width; j++)
             row[j] = (float)h[(size_t)(f->width - 1 - j) * f->up + p];
-        set_up_phase(&f->phases[p], row, f->width, f->fold && !f->dot4, f->arena + stride * p);
+        set_up_phase(&f->phases[p], row, f->width, f->fold && !f->dot4, f->arena + stride * k);
     }
     free(h);
     free(row);
-
-    f->step_whole = f->down / f->up;
-    f->step_frac = f->down % f->up;
     return f;
 }
 
