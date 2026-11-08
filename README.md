@@ -6,20 +6,22 @@
 
 # pipecat-resampler
 
-A small C extension for Python that converts 16-bit PCM audio, mono or with interleaved channels, from one sample rate to another, chunk by chunk or a whole clip at once. It's made for real-time audio, such as voice pipelines built with [Pipecat](https://github.com/pipecat-ai/pipecat). Streaming, equal chunks in give equal chunks out: 40 ms of audio in always gives 40 ms out, the first chunk included. For a whole clip, the output lines up with the input.
+A small C extension for Python that converts 16-bit PCM audio, mono or with interleaved channels, from one sample rate to another, as a stream of chunks or a whole clip at once. It's made for real-time voice pipelines, such as the ones built with [Pipecat](https://github.com/pipecat-ai/pipecat).
 
 ```python
 from pipecat_resampler import Resampler, StreamResampler
 
+# Streaming: equal chunks in give equal chunks out, the first one included.
 stream = StreamResampler(24000, 16000)
 chunk_16k = stream.process(chunk_24k)  # bytes in, bytes out
-tail = stream.flush()  # the audio the filter is delaying
+tail = stream.flush()  # the audio the filter is still delaying
 
 stereo = StreamResampler(48000, 16000, channels=2)
 frames_16k = stereo.process(frames_48k)  # interleaved frames in and out
 
+# A whole clip in one call: the output lines up with the input.
 resampler = Resampler(48000, 16000)
-clip_16k = resampler.resample(clip_48k)  # a whole clip in one call
+clip_16k = resampler.resample(clip_48k)
 ```
 
 ## Platforms
@@ -34,124 +36,140 @@ The extension uses Python's stable ABI, so one wheel per platform covers Python 
 
 ## Why it exists
 
-A real-time voice pipeline has to resample whenever its parts run at different rates. WebRTC audio arrives at 48 kHz while a speech recognizer might want 16 kHz, or a TTS voice that only comes at 24 kHz has to go out on an 8 kHz phone call. When that happens, the conversion runs chunk by chunk, every 10 to 40 ms, for every stream the process is handling.
+A voice pipeline resamples whenever its parts run at different rates: WebRTC audio arrives at 48 kHz while a speech recognizer wants 16 kHz, or a 24 kHz TTS voice goes out on an 8 kHz phone call. The conversion then runs every 10 to 40 ms for every stream in the process, and now and then on a whole clip, such as a tone to play or the audio a turn detector reads.
 
-We wanted a resampler built for that:
+We wanted one resampler built for that:
 
 - **Sinc quality.** A band-limited polyphase sinc filter, flat to 90% of the band, with about 90 dB of aliasing rejection.
 - **Fast.** C with SIMD, so one process can carry many streams at once.
 - **Small.** About 0.1 MB installed, with no runtime dependencies.
-- **Steady output.** The same input size gives the same output size on every call, so nothing downstream has to absorb bursts of audio or wait for audio that's held back.
+- **Steady output.** The same input size gives the same output size on every call, so nothing downstream has to absorb bursts or wait for audio that's held back.
 - **Low latency.** A fixed delay of a few milliseconds.
 - **Easy to ship.** BSD 2-Clause licensed, like Pipecat, with wheels for Linux (glibc 2.17 or later, and Alpine), macOS and Windows.
 
 Each library we tried covers part of this list, and none covered all of it.
 
-A pipeline also resamples whole clips now and then, such as a recorded tone to play or the audio a turn detector reads. `Resampler` does that with the same filter, so one library covers both.
-
 ## Comparison
 
-Each resampler converted 24 kHz noise to 16 kHz in 40 ms chunks, called from Python, on an Intel i9-10920X. Aliasing is how loud a 10 kHz tone comes out after it folds down to 6 kHz; lower is better.
+All resamplers were called from Python on an Intel i9-10920X. CPU times come from `scripts/bench.py`; lower is better. Run `uv run python scripts/bench.py` to measure on your machine. It times soxr, and also samplerate, PyAV and the Speex library when they're installed.
 
-| Resampler | Samples per 40 ms chunk (640 expected) | Aliasing | CPU per chunk | Install size |
-|---|---|---|---|---|
-| soxr VHQ | 0 to 1100 | -93 dB | 13.5 µs | 0.5 MB |
-| soxr QQ | 639 to 640 | -3 dB | 6.5 µs | 0.5 MB |
-| samplerate (libsamplerate) `sinc_medium` | 640, first chunk 594 | -100 dB | 198 µs | 1.8 MB |
-| PyAV (FFmpeg) | 640, first chunk 624 | -88 dB | 33.7 µs | 127 MB |
-| Speex resampler, quality 7 | 640 | -100 dB | 26.9 µs | no PyPI binding |
-| **pipecat-resampler** | 640 | -98 dB | 9.1 µs | 0.1 MB |
+### Streaming: output and quality
 
-How each one fits this use:
+Each resampler converted 24 kHz noise to 16 kHz in 40 ms chunks. Aliasing is how loud a 10 kHz tone comes out after it folds down to 6 kHz.
 
-- **soxr** reaches its quality cheaply by filtering with FFTs over large blocks. Fed small chunks, that means its output arrives in bursts. Its quick setting, QQ, is steady and the fastest option here; it uses cubic interpolation instead of a long filter, so content above the new rate folds back into the speech. soxr is licensed under the LGPL 2.1, and its Linux wheels need glibc 2.27 or later (2.26 on ARM), with none for Alpine.
-- **samplerate** (libsamplerate) is steady after its first chunk and very clean. Its sinc converters compute the filter for each output sample, which handles any ratio and costs about 15 times soxr's CPU here.
-- **PyAV** wraps FFmpeg's resampler, which is steady after its first chunk and fast. It brings FFmpeg along, 127 MB installed, and each call from Python costs about 30 µs whatever the chunk size.
-- **Speex** has a steady, clean resampler. It has no Python binding on PyPI (the `speexdsp` package covers its echo canceller), so we measured the system library through ctypes. It uses about twice soxr's CPU here, and more at 44.1 kHz, where it computes the filter on the fly.
+| Resampler | Samples per 40 ms chunk (640 expected) | Aliasing | Install size |
+|---|---|---|---|
+| **pipecat-resampler** | 640 | -98 dB | 0.1 MB |
+| soxr VHQ | 0 to 1100 | -93 dB | 0.5 MB |
+| soxr QQ | 639 to 640 | -3 dB | 0.5 MB |
+| samplerate (libsamplerate) `sinc_medium` | 640, first chunk 594 | -100 dB | 1.8 MB |
+| PyAV (FFmpeg) | 640, first chunk 624 | -88 dB | 127 MB |
+| Speex, quality 7 | 640 | -100 dB | no PyPI binding |
 
-### Whole clips
+- **soxr** filters with FFTs over large blocks, so with small chunks VHQ's output comes in bursts. QQ is steady and fast, but it uses cubic interpolation, so content above the new rate folds back into the speech. soxr is LGPL 2.1 licensed, and its Linux wheels need glibc 2.27 or later (2.26 on ARM), with none for Alpine.
+- **samplerate** is steady after its first chunk and very clean. It computes the filter for each output sample, which handles any ratio but costs about 15 times soxr's CPU.
+- **PyAV** wraps FFmpeg's resampler, which is steady after its first chunk. It brings FFmpeg along, and each call costs about 30 µs whatever the chunk size.
+- **Speex** is steady and clean. It has no Python binding on PyPI, so we measured the system library through ctypes.
 
-For whole clips, `Resampler` compares with `soxr.resample()` at its two highest qualities. Each one converted a 2 s clip from 24 kHz to 16 kHz in one call. Error is how far a mix of 24 tones up to 6.8 kHz comes out from the exact signal at 16 kHz. Offset is how far the output sits from the input in time, in output samples. Gain at 7.6 kHz shows how much of the top of the band each one keeps.
+### Streaming: by chunk size
 
-| Resampler | Error | Offset | Gain at 7.6 kHz | CPU per 2 s clip | Releases the GIL |
-|---|---|---|---|---|---|
-| soxr VHQ | -77 dB | 0.000 | -3.0 dB | 0.66 ms | yes |
-| soxr HQ | -78 dB | 0.000 | -2.9 dB | 0.42 ms | yes |
-| **pipecat-resampler** | -82 dB | 0.000 | -6.0 dB | 0.46 ms | yes |
-
-How they compare:
-
-- All three line the output up with the input, and turn a clip of n samples into `round(n * out_rate / in_rate)` samples, so a clip keeps its length.
-- soxr's filters are longer. They reject aliasing past -120 dB, and they keep the band flat further up: soxr is 3 dB down at 95% of the new Nyquist frequency, where pipecat-resampler is 6 dB down. pipecat-resampler's 90 dB puts what it lets through at about the last bit of 16-bit audio.
-- soxr adds dither when it outputs 16-bit samples, so its error here includes that noise, and digital silence comes back with noise in the last bit. pipecat-resampler rounds, so silence stays silent.
-- A `Resampler` designs its filter once and reuses it for every clip. `soxr.resample()` designs one on every call, which shows on short clips: a 0.2 s clip takes 0.05 ms here, against 0.08 ms for soxr HQ and 0.15 ms for VHQ.
-- Both release the GIL while they work, so other threads keep running while a clip is resampled.
-
-## Performance
-
-Called from Python, in microseconds per chunk, from the same run as the comparison; lower is better.
-
-At 24 → 16 kHz, by chunk size:
+One stream at 24 → 16 kHz, in microseconds per chunk:
 
 | Resampler | 10 ms | 20 ms | 40 ms |
 |---|---|---|---|
-| **pipecat-resampler** | 2.4 | 4.7 | 9.1 |
-| soxr VHQ | 5.7 | 8.1 | 13.5 |
-| soxr QQ | 3.3 | 4.6 | 6.5 |
-| samplerate `sinc_medium` | 55.0 | 103.0 | 198.1 |
-| PyAV | 29.0 | 31.3 | 33.7 |
-| Speex quality 7 | 9.2 | 14.9 | 26.9 |
+| **pipecat-resampler** | 2.6 | 4.9 | 9.6 |
+| soxr VHQ | 5.3 | 7.7 | 12.7 |
+| soxr QQ | 3.2 | 4.4 | 6.8 |
+| samplerate `sinc_medium` | 55.9 | 104.0 | 199.9 |
+| PyAV | 28.7 | 29.3 | 31.6 |
+| Speex quality 7 | 9.1 | 14.6 | 26.2 |
 
-At 40 ms chunks, the size Pipecat's output transport sends, by rate pair:
+pipecat-resampler is the fastest of the filtered options at every chunk size, and its lead grows as chunks get smaller.
+
+### Streaming: by rate pair
+
+One stream with 40 ms chunks, the size Pipecat's output transport sends, in microseconds per chunk:
 
 | Resampler | 24 → 16 kHz | 24 → 8 kHz | 16 → 8 kHz | 8 → 16 kHz | 48 → 16 kHz | 44.1 → 16 kHz |
 |---|---|---|---|---|---|---|
-| **pipecat-resampler** | 9.2 | 8.6 | 6.1 | 7.9 | 17.0 | 17.0 |
-| soxr VHQ | 13.8 | 9.2 | 6.1 | 6.9 | 15.1 | 18.0 |
-| soxr QQ | 7.0 | 4.8 | 4.6 | 6.9 | 7.2 | 7.1 |
-| samplerate `sinc_medium` | 198.8 | 184.0 | 127.8 | 145.1 | 357.0 | 388.8 |
-| PyAV | 33.5 | 32.8 | 31.8 | 31.2 | 36.0 | 35.6 |
-| Speex quality 7 | 27.4 | 29.7 | 19.6 | 19.0 | 55.5 | 217.3 |
+| **pipecat-resampler** | 9.7 | 8.8 | 6.2 | 7.7 | 18.1 | 18.2 |
+| soxr VHQ | 12.8 | 8.4 | 5.7 | 6.2 | 14.7 | 17.8 |
+| soxr QQ | 6.8 | 4.6 | 4.5 | 6.8 | 6.8 | 7.0 |
+| samplerate `sinc_medium` | 205.5 | 185.2 | 130.5 | 144.4 | 360.4 | 394.7 |
+| PyAV | 32.5 | 32.1 | 31.1 | 31.8 | 37.2 | 36.9 |
+| Speex quality 7 | 26.6 | 29.3 | 19.8 | 19.6 | 56.9 | 218.6 |
 
-At 24 → 16 kHz, pipecat-resampler is the fastest of the filtered options at every chunk size, and its lead grows as chunks get smaller, because each call costs less. With 40 ms chunks, soxr VHQ is a little faster on 8 → 16 and 48 → 16 kHz, where its multistage FFT design is very cheap. Even pipecat-resampler's slowest case here, 17 µs per 40 ms chunk, is under 0.05% of one core per stream.
+soxr VHQ uses less CPU at every pair but 24 → 16 kHz: under 10% less at 24 → 8, 16 → 8 and 44.1 → 16 kHz, and about a fifth less at 8 → 16 and 48 → 16 kHz, where its multistage design pays off. pipecat-resampler's slowest case here, 18 µs per 40 ms chunk, is under 0.05% of one core.
 
-Whole clips against `soxr.resample()`, in milliseconds per clip, from a later run on the same machine. At 24 → 16 kHz, by clip length:
+### Streaming: multiple streams
+
+A process carrying many calls runs many streams at once. Here, 64 streams at the same rates were each given a 40 ms chunk in turn, in microseconds per chunk:
+
+| Resampler | 24 → 16 kHz | 48 → 16 kHz | 44.1 → 16 kHz |
+|---|---|---|---|
+| **pipecat-resampler** | 9.5 | 17.4 | 17.6 |
+| soxr VHQ | 15.7 | 18.5 | 23.4 |
+| soxr QQ | 6.8 | 7.1 | 7.1 |
+| samplerate `sinc_medium` | 200.4 | 355.9 | 393.5 |
+| PyAV | 32.1 | 34.2 | 36.2 |
+| Speex quality 7 | 26.3 | 55.3 | 216.3 |
+
+pipecat-resampler costs the same per chunk as with one stream, because the streams share one filter and it stays in the CPU's cache. soxr VHQ costs a fifth to a third more than alone, and more than pipecat-resampler at all three pairs.
+
+### Whole clips: quality
+
+`Resampler` against `soxr.resample()` at its two highest qualities, converting a 2 s clip from 24 kHz to 16 kHz. Error is how far a mix of tones up to 6.8 kHz comes out from the exact signal. Offset is how far the output sits from the input in time, in samples. Gain at 7.6 kHz shows how much of the top of the band each one keeps.
+
+| Resampler | Error | Offset | Gain at 7.6 kHz |
+|---|---|---|---|
+| **pipecat-resampler** | -82 dB | 0.000 | -6.0 dB |
+| soxr VHQ | -77 dB | 0.000 | -3.0 dB |
+| soxr HQ | -78 dB | 0.000 | -2.9 dB |
+
+- All three line the output up with the input and keep the clip's length: n samples in give `round(n * out_rate / in_rate)` out.
+- soxr's longer filters keep more of the top of the band and reject aliasing past -120 dB. pipecat-resampler's 90 dB puts what it lets through at about the last bit of 16-bit audio.
+- soxr adds dither to its 16-bit output, which is part of its error here and turns digital silence into noise in the last bit. pipecat-resampler rounds, so silence stays silent.
+- Both release the GIL while they work.
+
+### Whole clips: by clip length
+
+At 24 → 16 kHz, in milliseconds per clip:
 
 | Resampler | 0.2 s | 2 s | 8 s |
 |---|---|---|---|
-| **pipecat-resampler** | 0.05 | 0.47 | 1.85 |
-| soxr VHQ | 0.15 | 0.66 | 2.13 |
-| soxr HQ | 0.08 | 0.44 | 1.54 |
+| **pipecat-resampler** | 0.05 | 0.47 | 1.88 |
+| soxr VHQ | 0.15 | 0.64 | 2.15 |
+| soxr HQ | 0.08 | 0.45 | 1.60 |
 
-For 2 s clips, by rate pair:
+pipecat-resampler is the quickest on short clips, because a `Resampler` designs its filter once while `soxr.resample()` designs one on every call. soxr HQ is faster on longer clips.
+
+### Whole clips: by rate pair
+
+For 2 s clips, in milliseconds per clip:
 
 | Resampler | 24 → 16 kHz | 24 → 8 kHz | 16 → 8 kHz | 8 → 16 kHz | 48 → 16 kHz | 44.1 → 16 kHz |
 |---|---|---|---|---|---|---|
-| **pipecat-resampler** | 0.46 | 0.43 | 0.29 | 0.37 | 0.85 | 0.84 |
-| soxr VHQ | 0.66 | 0.44 | 0.21 | 0.23 | 0.75 | 0.97 |
-| soxr HQ | 0.42 | 0.25 | 0.16 | 0.19 | 0.46 | 0.67 |
+| **pipecat-resampler** | 0.49 | 0.44 | 0.29 | 0.38 | 0.86 | 0.84 |
+| soxr VHQ | 0.65 | 0.40 | 0.23 | 0.27 | 0.72 | 0.99 |
+| soxr HQ | 0.45 | 0.26 | 0.16 | 0.21 | 0.50 | 0.70 |
 
-pipecat-resampler is the quickest on short clips, and faster than soxr VHQ at 24 → 16 and 44.1 → 16 kHz. soxr HQ is faster on longer clips, and both soxr settings are faster at 2:1 and 3:1 ratios and when upsampling.
-
-Run `uv run python scripts/bench.py` to measure on your machine. It times soxr, and also samplerate, PyAV and the Speex library when they're installed.
-
-### What the cost depends on
-
-Every filter tap costs about the same, around 0.08 ns here, so the cost follows the number of taps. To keep 90% of the band flat, the filter has to span a fixed stretch of time, so it does about 115 multiply-adds for every sample at the higher of the two rates. That's why 48 → 16 kHz costs twice what 24 → 16 kHz does, and 44.1 kHz about the same as 48 kHz. soxr brings a large ratio down in stages: a short filter with a wide transition band lowers the rate first, and its sharp filter then runs at the lower rate, so its cost grows much less with the input rate.
+soxr HQ is faster at every pair, and soxr VHQ at all but 24 → 16 and 44.1 → 16 kHz.
 
 ## How it works
 
-It's a polyphase Kaiser-windowed sinc filter, the design WebRTC and Speex use. The filter keeps the lower rate's band flat up to 90% of its Nyquist frequency and attenuates aliasing and images by about 90 dB.
+**Filter.** It's a polyphase Kaiser-windowed sinc filter, the design WebRTC and Speex use. It keeps the lower rate's band flat up to 90% of its Nyquist frequency and attenuates aliasing and images by about 90 dB. It has an odd number of taps, so each output sample sits exactly on its middle tap.
 
-Each `StreamResampler` call works out how many output samples its input is worth and carries any fraction of a sample into the next call. That's what keeps the output steady, for any pair of rates and any chunk size. Instead of holding output back, the filter delays the audio by a few milliseconds; `flush()` returns that delayed end, and `reset()` discards it.
+**Streaming.** Each `process()` call works out how many output samples its input is worth and carries any fraction of a sample into the next call, which keeps the output steady for any rates and chunk size. Instead of holding output back, the filter delays the audio by a few milliseconds; `flush()` returns that delayed end, and `reset()` discards it.
 
-A `Resampler` takes a whole clip, which it treats as silent before and after. The filter has an odd number of taps, so each output sample sits exactly on its middle tap: output sample n is the clip at input sample n × in_rate / out_rate. The output holds the clip's length at the new rate, rounded to the nearest sample. A call doesn't change the resampler, so threads can share one, and it releases the GIL while it works.
+**Whole clips.** `resample()` treats the clip as silent before and after it. Output sample n is the clip at input sample n × in_rate / out_rate, and the output keeps the clip's length, rounded to the nearest sample. A call doesn't change the resampler, so threads can share one.
 
-With several channels, the audio is interleaved frames, and each channel is filtered on its own with the same filter. The cost grows with the channel count, so stereo costs twice what mono does.
+**Channels.** With several channels, the audio is interleaved frames, and each channel is filtered on its own, so stereo costs twice what mono does.
 
-Resamplers between the same two rates share one filter. It's built when the first of them is created and freed when the last one goes, so a process handling many streams holds each filter once. That matters most at 44.1 kHz, where a filter takes about 200 KB and a few milliseconds to build.
+**Shared filters.** Resamplers between the same two rates share one filter, built with the first and freed with the last. That saves the most at 44.1 kHz, where a filter takes about 200 KB and a few milliseconds to build, and it keeps many streams fast.
 
-The inner loop picks the fastest kernel the CPU supports when a filter is built: AVX2 with FMA or SSE2 on x86-64, NEON on ARM64, and plain C elsewhere. Filter phases with symmetric taps add mirrored samples before multiplying, which halves the multiplications. Set `PIPECAT_RESAMPLER_KERNEL` to `generic`, `sse2`, `avx2` or `neon` to force a kernel.
+**Cost.** Every filter tap costs about the same, around 0.08 ns here, and the filter does about 115 multiply-adds for every sample at the higher of the two rates. So 48 → 16 kHz costs twice what 24 → 16 kHz does, and 44.1 kHz about the same as 48 kHz.
+
+**Kernels.** The inner loop uses the fastest kernel the CPU supports: AVX2 with FMA or SSE2 on x86-64, NEON on ARM64, and plain C elsewhere. Filter phases with symmetric taps add mirrored samples before multiplying, which halves the multiplications. Set `PIPECAT_RESAMPLER_KERNEL` to `generic`, `sse2`, `avx2` or `neon` to force a kernel.
 
 ## Development
 
