@@ -8,10 +8,11 @@
 
 Streaming first, in microseconds per chunk, median of five runs: at 24 -> 16 kHz by
 chunk size, then by rate pair at 40 ms chunks, the size Pipecat's output transport
-sends. Then whole clips against soxr.resample(), in milliseconds per clip: at
-24 -> 16 kHz by clip length, then by rate pair for 2 s clips. soxr is a dev
-dependency; samplerate, PyAV and the Speex library are measured when they're
-installed.
+sends, and then with many streams at the same rates, each given a chunk in turn, as
+in a process carrying many calls. Then whole clips against soxr.resample(), in
+milliseconds per clip: at 24 -> 16 kHz by clip length, then by rate pair for 2 s
+clips. soxr is a dev dependency; samplerate, PyAV and the Speex library are measured
+when they're installed.
 """
 
 import ctypes
@@ -32,6 +33,9 @@ PAIRS = [
     (48000, 16000),
     (44100, 16000),
 ]
+
+STREAMS = 64
+STREAM_PAIRS = [(24000, 16000), (48000, 16000), (44100, 16000)]
 
 
 def pipecat_resampler(i, o):
@@ -145,6 +149,23 @@ def per_chunk_us(make, i, o, ms):
     return statistics.median(runs)
 
 
+def many_streams_us(make, i, o, ms):
+    rng = np.random.default_rng(0)
+    parts = [(rng.standard_normal(i * ms // 1000) * 8000).astype(np.int16) for _ in range(40)]
+    streams = [make(i, o) for _ in range(STREAMS)]
+    for p in parts[:4]:
+        for process in streams:
+            process(p)
+    runs = []
+    for _ in range(5):
+        start = time.perf_counter()
+        for p in parts:
+            for process in streams:
+                process(p)
+        runs.append((time.perf_counter() - start) / (len(parts) * STREAMS) * 1e6)
+    return statistics.median(runs)
+
+
 def pipecat_resampler_clip(i, o):
     return Resampler(i, o).resample
 
@@ -207,6 +228,15 @@ def main():
         ["Resampler"] + [f"{i / 1000:g} -> {o / 1000:g} kHz" for i, o in PAIRS],
         [
             [name] + [f"{per_chunk_us(make, i, o, 40):.1f}" for i, o in PAIRS]
+            for name, make in resamplers.items()
+        ],
+    )
+
+    print(f"\n{STREAMS} streams at the same rates, 40 ms chunks, µs per chunk\n")
+    table(
+        ["Resampler"] + [f"{i / 1000:g} -> {o / 1000:g} kHz" for i, o in STREAM_PAIRS],
+        [
+            [name] + [f"{many_streams_us(make, i, o, 40):.1f}" for i, o in STREAM_PAIRS]
             for name, make in resamplers.items()
         ],
     )
